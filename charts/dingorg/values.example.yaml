@@ -1,0 +1,29 @@
+# 部署起点：复制成 values.prod.yaml 后填写，步骤见 README「部署」。
+# ⚠️ 敏感值一个都不填在这里，放在预先建好的 Secret 里。
+
+image:
+  repository: ghcr.io/your-org/dingorg
+  # CI 推的是提交短 SHA
+  tag: 'REPLACE_ME'
+
+secretName: dingorg-app
+
+# ⚠️ 每次改 Secret 都要 bump
+secretVersion: '2026-09-04'
+
+ingress:
+  enabled: true
+  className: nginx
+  # OIDC_ISSUER 从它派生
+  host: dingorg.example.com
+  tls: true
+
+env:
+  # Ingress 后面必须是 '1'
+  AUTH_TRUST_PROXY_HEADERS: '1'
+
+server:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }

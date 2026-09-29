@@ -1,0 +1,28 @@
+node_modules/
+/coverage
+
+# tsup 产物（biome 也靠这一条跳过它）
+dist/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# 本地 env（只有 .env.example 入库）
+.env
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# idea files
+.idea
+
+# .env 的本地备份（含真实凭证）
+.env.bak-*

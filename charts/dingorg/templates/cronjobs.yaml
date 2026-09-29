@@ -1,0 +1,20 @@
+{{- $root := . }}
+{{- range $name, $cfg := .Values.cronjobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "dingorg.name" $root }}-{{ $name }}
+  labels:
+    {{- include "dingorg.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: cron-{{ $name }}
+spec:
+  schedule: {{ $cfg.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      {{- include "dingorg.taskJobSpec" (dict "root" $root "name" $name "cfg" $cfg "component" (printf "cron-%s" $name)) | nindent 6 }}
+{{- end }}

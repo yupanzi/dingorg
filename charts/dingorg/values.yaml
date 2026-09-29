@@ -1,0 +1,65 @@
+# 默认值；部署时用 -f 覆盖（从 values.example.yaml 起步）。
+# 敏感值不进 values（会留在 release 历史里），放在预先建好的 Secret 里。
+
+image:
+  # 如 ghcr.io/your-org/dingorg。所有 Pod 共用，靠 command 区分入口
+  repository: ''
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# 存放 DATABASE_URL / 钉钉凭证 / OIDC_CLIENTS_JSON 的 Secret 名
+secretName: dingorg-app
+
+# ⚠️ 改了 Secret 必须 bump 这个值（任意字符串），否则常驻进程还拿着旧值
+secretVersion: ''
+
+# 留空的键不渲染，用进程侧默认值或派生值
+env:
+  # ⚠️ Ingress 后面必须是 '1'。前提：代理覆盖（而非透传）x-forwarded-*，且不可绕过代理直连
+  AUTH_TRUST_PROXY_HEADERS: '1'
+
+  # 留空即从 ingress.host / server.port 派生
+  OIDC_ISSUER: ''
+  IDP_PORT: ''
+
+  # fatal / error / warn / info / debug / trace / silent，留空即 info。所有 Pod 共用
+  LOG_LEVEL: ''
+
+server:
+  # 无状态（会话与快照都在 PG），可水平扩
+  replicas: 2
+  # 容器端口、探针、Service targetPort 与 IDP_PORT 都由它派生
+  port: 3080
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+# 每个 cron 只注入 secretKeys 里列出的键，别改回 envFrom 整个 Secret。
+# schedule 按 kube-controller-manager 的时区（通常 UTC）。backoffLimit 必须显式给。
+cronjobs:
+  oidcpurge:
+    # ⚠️ 清理 OIDC 过期工件，删了它 oidc_payloads 会无限涨
+    schedule: '43 2 * * *'
+    secretKeys: [DATABASE_URL]
+    backoffLimit: 2
+  orgsync:
+    # ⚠️ 自有快照的每日刷新（调 POST /api/v1/sync），删了它离职的人一直能登录。
+    # UTC 04:00 = 北京时间 12:00
+    schedule: '0 4 * * *'
+    secretKeys: [DINGTALK_APP_KEY, DINGTALK_APP_SECRET]
+    # 失败由进程内重试（间隔长于服务端冷却），Job 层不再重试；驱逐等中断不计入
+    backoffLimit: 0
+
+# 每次 install / upgrade 后跑一次 orgsync（post-install/post-upgrade hook）：首次部署不用手动
+# 触发，升级后快照立即按新代码重建。⚠️ 部署要带 --wait（否则可能打到还没滚完的旧 Pod）；
+# 它失败会让这次 release 标成失败。
+syncOnDeploy: true
+
+ingress:
+  enabled: true
+  className: nginx
+  host: ''
+  tls: true
+
+migration:
+  enabled: true

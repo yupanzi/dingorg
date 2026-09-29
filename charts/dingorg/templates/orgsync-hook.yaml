@@ -1,0 +1,14 @@
+{{- if .Values.syncOnDeploy }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dingorg.name" . }}-orgsync-deploy
+  labels:
+    {{- include "dingorg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orgsync-deploy
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  {{- include "dingorg.taskJobSpec" (dict "root" . "name" "orgsync" "cfg" .Values.cronjobs.orgsync "component" "orgsync-deploy") | nindent 2 }}
+{{- end }}

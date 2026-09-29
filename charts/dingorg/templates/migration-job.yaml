@@ -1,0 +1,34 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dingorg.name" . }}-migrate
+  labels:
+    {{- include "dingorg.labels" . | nindent 4 }}
+  annotations:
+    # 失败时 Helm 中止整次升级，不会出现「迁移失败但应用已滚上去」
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "dingorg.name" . }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ['node', 'dist/bin/migrate.js']
+          env:
+            {{- include "dingorg.secretEnv" (dict "root" . "keys" (list "DATABASE_URL")) | nindent 12 }}
+            {{- include "dingorg.logLevelEnv" . | nindent 12 }}
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+{{- end }}

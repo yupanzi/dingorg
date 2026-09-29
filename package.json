@@ -1,0 +1,49 @@
+{
+	"name": "dingorg",
+	"version": "1.0.0",
+	"description": "钉钉 → 标准 OIDC 桥接，及按钉钉应用隔离的组织架构快照",
+	"license": "MIT",
+	"type": "module",
+	"private": true,
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+		"build": "tsup",
+		"start": "node dist/server.js",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"check": "biome check .",
+		"check:write": "biome check --write .",
+		"db:generate": "drizzle-kit generate",
+		"db:migrate": "drizzle-kit migrate",
+		"db:studio": "drizzle-kit studio",
+		"migrate": "tsx --env-file-if-exists=.env src/bin/migrate.ts",
+		"orgsync": "tsx --env-file-if-exists=.env src/bin/cron/orgsync.ts",
+		"oidc:new-client": "tsx src/bin/new-oidc-client.ts"
+	},
+	"dependencies": {
+		"@fastify/middie": "^9.3.3",
+		"drizzle-orm": "^0.45.2",
+		"fastify": "^5.7.4",
+		"jose": "^6.2.4",
+		"oidc-provider": "^9.12.2",
+		"pg": "^8.22.0",
+		"pino": "^10.3.1",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.2.5",
+		"@types/node": "^22.20.1",
+		"@types/oidc-provider": "^9.12.1",
+		"@types/pg": "^8.15.6",
+		"drizzle-kit": "^0.31.10",
+		"tsup": "^8.5.0",
+		"tsx": "^4.23.1",
+		"typescript": "^5.8.2",
+		"vitest": "^4.1.10"
+	},
+	"packageManager": "pnpm@11.23.0+sha512.f00082e5b283a199b74e079da28d155c008fe232f44c8a06ea7ddfa014ecf719fc362f790ecc67b28106ddac2afb24c49a9a079159da560b2ce7d1e98efd11af"
+}

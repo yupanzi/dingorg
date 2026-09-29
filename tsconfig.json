@@ -1,0 +1,33 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	// 不加 dom lib：它的 fetch/Headers 与 undici 签名不同。
+	// 只用行注释：路径通配里的星号加斜杠会提前终止块注释。
+	"compilerOptions": {
+		"target": "ES2023",
+		"lib": ["ES2023"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"resolveJsonModule": true,
+		"esModuleInterop": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"moduleDetection": "force",
+		"skipLibCheck": true,
+
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+
+		"noEmit": true,
+		"incremental": true,
+		"types": ["node"],
+
+		"baseUrl": ".",
+		"paths": {
+			"~/*": ["./src/*"]
+		}
+	},
+	"include": ["src/**/*.ts", "*.config.ts"],
+	"exclude": ["node_modules", "dist"]
+}

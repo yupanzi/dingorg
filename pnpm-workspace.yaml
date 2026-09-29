@@ -1,0 +1,5 @@
+# 单包仓库，这个文件只是 pnpm 11 的配置载体（写在 package.json 里会被忽略）。
+# ⚠️ allowBuilds 删不得：pnpm 11 对没表态的构建脚本（esbuild）让 install 返回非零，
+# CI、Dockerfile 与本地所有 pnpm run 都会失败。
+allowBuilds:
+  esbuild: true
