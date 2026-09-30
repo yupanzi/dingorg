@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "dingorg.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ['node', 'dist/server.js']
           ports:

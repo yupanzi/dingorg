@@ -3,6 +3,10 @@
 	"version": "1.0.0",
 	"description": "钉钉 → 标准 OIDC 桥接，及组织架构快照 REST 出口",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yupanzi/dingorg.git"
+	},
 	"type": "module",
 	"private": true,
 	"engines": {
@@ -23,7 +27,9 @@
 		"migrate": "tsx --env-file-if-exists=.env src/bin/migrate.ts",
 		"orgsync": "tsx --env-file-if-exists=.env src/bin/cron/orgsync.ts",
 		"auth:oidc": "tsx src/bin/auth.ts oidc",
-		"auth:apikey": "tsx src/bin/auth.ts apikey"
+		"auth:apikey": "tsx src/bin/auth.ts apikey",
+		"release:dry": "semantic-release --dry-run --no-ci",
+		"prepare": "husky || true"
 	},
 	"dependencies": {
 		"@fastify/middie": "^9.3.3",
@@ -37,10 +43,18 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.5",
+		"@commitlint/cli": "^21.2.3",
+		"@commitlint/config-conventional": "^21.2.3",
+		"@semantic-release/changelog": "^7.0.0",
+		"@semantic-release/exec": "^7.1.0",
+		"@semantic-release/git": "^11.0.1",
 		"@types/node": "^22.20.1",
 		"@types/oidc-provider": "^9.12.1",
 		"@types/pg": "^8.15.6",
+		"conventional-changelog-conventionalcommits": "^9.3.1",
 		"drizzle-kit": "^0.31.10",
+		"husky": "^9.1.7",
+		"semantic-release": "^25.0.9",
 		"tsup": "^8.5.0",
 		"tsx": "^4.23.1",
 		"typescript": "^5.8.2",

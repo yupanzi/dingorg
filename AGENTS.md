@@ -42,6 +42,8 @@ src/
 drizzle/             迁移
 charts/dingorg/      Helm：Deployment + CronJob + migrate Job + 部署后的 orgsync hook
 Dockerfile           一个镜像、多入口
+.releaserc.json      发版：版本号 · CHANGELOG · tag · GitHub Release · 推镜像（CI 的 release job 跑）
+scripts/             release-version（发版时把版本写回 package.json 与 Chart.yaml）
 ```
 
 保持**单包**：不引入 workspace、Next 或第二个进程。
@@ -216,6 +218,22 @@ Dockerfile           一个镜像、多入口
 - **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与快照刷新。
 - **deploy 不进 CI。写完 Dockerfile 一定 `docker run` 一次。**
 
+## 版本与发布
+
+- **版本号只由 semantic-release 出**（`ci.yml` 的 release job，push 到 master 且 check 过了才跑）：
+  别手改 `package.json` / `Chart.yaml` 的版本号，别手打 tag、手推镜像。
+- ⚠️ **提交信息就是发版开关**：`feat` → minor，`fix` / `perf` → patch，type 后加 `!` 或脚注
+  `BREAKING CHANGE:` → major，其余 type 不发版。commitlint 在 commit-msg 钩子里卡，模板 `.gitmessage`。
+- ⚠️ **preset 是 `conventionalcommits`，别删回默认**：默认的 angular 不认 `feat!:`，破坏性变更会被
+  当成不发版。`conventional-changelog-conventionalcommits` 钉在 9.x：10 要 writer@9，semantic-release
+  自带的 notes-generator 还是 writer@8，渲染发版说明时报错。升 semantic-release 时一起看。
+- **镜像 tag = 版本号 + `latest`**，在 `.releaserc.json` 的 `publishCmd` 里推（理由在 `ci.yml`）。
+  PR 上只验证能构建，不推。
+- **Chart 的 `version` / `appVersion` 跟着发版走，`image.tag` 留空即 appVersion**（`_helpers.tpl`
+  的 `dingorg.image`，五类 Pod 共用）。写回在 `scripts/release-version.mjs`，Chart.yaml 的格式变了
+  它报错而不是空转。
+- **`prepare` 的 `|| true` 别删**：Dockerfile 的 prod-deps 阶段没有 husky（devDep），删了镜像构建失败。
+
 ## 写代码时
 
 - **资源名不要硬编码**：lock 键、`app_secrets` 键、审计动作串从 `~/resources` import。
@@ -253,7 +271,10 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
   - 日志：带 `?code=xxx` 访问扫码回调，日志里 grep 不到 `xxx`；healthz 不出现；
     `LOG_LEVEL=verbose` 启动是一行 fatal JSON、exit 1。
   - chart：`helm lint charts/dingorg -f charts/dingorg/values.example.yaml`；`helm template` 看两个
-    CronJob 与部署 hook 各自只拿到 `secretKeys` 里的键，`--set env.LOG_LEVEL=debug` 时五类 Pod 都有它。
+    CronJob 与部署 hook 各自只拿到 `secretKeys` 里的键，`--set env.LOG_LEVEL=debug` 时五类 Pod 都有它；
+    `image.tag` 留空时五类 Pod 的镜像都是 `:<appVersion>`。
+  - 发版：`GITHUB_TOKEN=<对本仓库有写权限> pnpm release:dry` 看下一个版本号与发版说明（不推送、
+    不建镜像；它先校验推送权限，没 token 就停在那一步）。
 
 ## 注释纪律
 

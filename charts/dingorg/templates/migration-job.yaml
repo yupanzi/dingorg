@@ -22,7 +22,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "dingorg.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ['node', 'dist/bin/migrate.js']
           env:

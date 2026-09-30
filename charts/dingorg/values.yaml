@@ -4,7 +4,9 @@
 image:
   # 如 ghcr.io/your-org/dingorg。所有 Pod 共用，靠 command 区分入口
   repository: ''
-  tag: latest
+  # 留空即 Chart.yaml 的 appVersion（release 时两者一起 bump）。别填 latest：IfNotPresent 下
+  # 节点上有旧的 latest 就不再拉，各节点跑的版本会不一样
+  tag: ''
   pullPolicy: IfNotPresent
 
 # 存放 DATABASE_URL / 钉钉凭证 / AUTH_JSON 的 Secret 名

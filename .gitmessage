@@ -1,0 +1,15 @@
+# <type>(<scope>): <主题——祈使句、简洁、句末不加句号>
+#
+# 正文（可选）：只写为什么这么改、不这么改会怎样，不复述 diff。
+#
+# 脚注（可选）：BREAKING CHANGE: <不兼容之处与迁移方式>
+#
+# ⚠ 仓库公开：提交信息会进 CHANGELOG 与 GitHub Release，永久可检索。
+#   不写凭证、API key、client secret、内部域名、真实人名与 unionId。
+#
+# ── 发版 ────────────────────────────────────────────
+# feat → minor   fix / perf / git revert 生成的回滚 → patch
+# type 后加 ! 或脚注写 BREAKING CHANGE: → major
+# 其余 type 不发版：docs style refactor test build ci chore
+# ── 常用 scope（自由，非强制）────────────────────────
+# oidc interaction api auth sync dingtalk audit db chart docker deps

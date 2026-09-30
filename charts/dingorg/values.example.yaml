@@ -3,8 +3,8 @@
 
 image:
   repository: ghcr.io/your-org/dingorg
-  # CI 推的是提交短 SHA
-  tag: 'REPLACE_ME'
+  # CI 发版时推 X.Y.Z 与 latest。留空即所用 chart 的 appVersion，要钉别的版本才填
+  tag: ''
 
 secretName: dingorg-app
 

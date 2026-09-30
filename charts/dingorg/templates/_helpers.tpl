@@ -9,6 +9,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
 
+{{/* image.tag 留空即 appVersion：release 时它与镜像 tag 是同一个版本号 */}}
+{{- define "dingorg.image" -}}
+{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+{{- end -}}
+
 {{/* 常驻进程的非敏感 env。空值不渲染，由进程侧默认值或下面的派生值接管 */}}
 {{- define "dingorg.env" -}}
 {{- range $k, $v := .Values.env }}
@@ -60,7 +65,7 @@ template:
     restartPolicy: Never
     containers:
       - name: {{ .name }}
-        image: "{{ .root.Values.image.repository }}:{{ .root.Values.image.tag }}"
+        image: {{ include "dingorg.image" .root | quote }}
         imagePullPolicy: {{ .root.Values.image.pullPolicy }}
         command: ['node', 'dist/bin/cron/{{ .name }}.js']
         env:

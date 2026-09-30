@@ -1,0 +1,2 @@
+pnpm run --silent check
+pnpm run --silent typecheck

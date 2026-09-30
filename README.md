@@ -257,7 +257,8 @@ kubectl create secret generic dingorg-app -n dingorg-prod \
   --from-literal=DINGTALK_APP_SECRET='...' \
   --from-literal=AUTH_JSON="$AUTH"
 
-# 2. 填 values 后部署
+# 2. 切到要部署的版本（chart 的 appVersion 就是默认的镜像 tag），填 values 后部署
+git checkout vX.Y.Z
 cp charts/dingorg/values.example.yaml values.prod.yaml
 helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.yaml \
   --wait --timeout 15m
@@ -267,7 +268,8 @@ helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.y
 （`pre-install,pre-upgrade` hook）+ 部署后的 orgsync Job（`post-install,post-upgrade` hook）。
 需要 Kubernetes ≥ 1.26（Job 用了 `podFailurePolicy`）。
 
-- 必填的 values：`image.repository`、`image.tag`、`ingress.host`（`PUBLIC_ORIGIN` 从它派生）。
+- 必填的 values：`image.repository`、`ingress.host`（`PUBLIC_ORIGIN` 从它派生）。`image.tag` 留空
+  即所用 chart 的 appVersion，要钉别的版本才填。
 - **每次 install / upgrade 后自动刷新一次快照**，首次部署不用手动触发。它失败（最常见是出口
   IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。
@@ -277,6 +279,25 @@ helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.y
   状态端点的 `error`。schedule 在 `cronjobs.orgsync.schedule` 改。
 - `POST /api/v1/sync` 大组织可能要几十秒，Ingress 的 `proxy-read-timeout`（nginx 默认 60 秒）要留够。
 - **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与快照刷新。
+
+## 版本与发布
+
+全自动，由 [semantic-release](https://semantic-release.gitbook.io/) 按提交信息决定：push 到 `master`、
+CI 的 check 过了之后，自上次发版以来的提交里
+
+| 提交 | 版本 |
+|---|---|
+| `feat:` | minor（`x.Y.0`） |
+| `fix:` / `perf:` / `git revert` 生成的回滚 | patch（`x.y.Z`） |
+| type 后加 `!`（`feat!:`）或脚注写 `BREAKING CHANGE:` | major（`X.0.0`） |
+| `docs:` `refactor:` `test:` `build:` `ci:` `chore:` `style:` | 不发版 |
+
+发版一次产出：`package.json` 与 `Chart.yaml` 的版本号、`CHANGELOG.md`、`vX.Y.Z` tag、GitHub Release、
+镜像 `ghcr.io/yupanzi/dingorg:X.Y.Z` 与 `:latest`（写回的那次提交带 `[skip ci]`）。
+
+提交信息由 commit-msg 钩子（commitlint）校验，格式 `<type>(<scope>): <主题>`；
+`git config commit.template .gitmessage` 后 `git commit` 不带 `-m` 会弹出引导。
+pre-commit 钩子跑 `pnpm check` 与 `pnpm typecheck`。两个钩子都在 `pnpm install` 时装好。
 
 ## 常用命令
 
@@ -293,6 +314,7 @@ pnpm orgsync          # 刷新自有应用快照（即每日 cron 的入口，�
 pnpm -s auth:oidc --name <名字> --redirect-uri <回调> [--merge]   # 生成下游 client（只在本机跑）
 pnpm -s auth:apikey --name <调用方> [--merge]                      # 生成 REST API key（只在本机跑）
 pnpm db:studio
+GITHUB_TOKEN=... pnpm release:dry   # 预演下一次发版（版本号与发版说明），不推送、不建镜像
 ```
 
 ## License
