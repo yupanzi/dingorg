@@ -1,6 +1,6 @@
 {
 	"name": "dingorg",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "钉钉 → 标准 OIDC 桥接，及组织架构快照 REST 出口",
 	"license": "MIT",
 	"repository": {
