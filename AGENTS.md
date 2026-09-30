@@ -232,6 +232,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **Chart 的 `version` / `appVersion` 跟着发版走，`image.tag` 留空即 appVersion**（`_helpers.tpl`
   的 `dingorg.image`，五类 Pod 共用）。写回在 `scripts/release-version.mjs`，Chart.yaml 的格式变了
   它报错而不是空转。
+- ⚠️ **release job 别设 `GIT_AUTHOR_*`**，也别加名字含 key / auth / token、值是普通单词的变量
+  （理由在 `ci.yml`）。
 - **`prepare` 的 `|| true` 别删**：Dockerfile 的 prod-deps 阶段没有 husky（devDep），删了镜像构建失败。
 
 ## 写代码时

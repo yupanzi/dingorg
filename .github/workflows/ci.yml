@@ -108,11 +108,9 @@ jobs:
       - run: pnpm exec semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 默认作者是 semantic-release-bot，覆盖成仓库主
-          GIT_AUTHOR_NAME: yupanzi
-          GIT_AUTHOR_EMAIL: me@yupanzi.com
-          GIT_COMMITTER_NAME: yupanzi
-          GIT_COMMITTER_EMAIL: me@yupanzi.com
+          # 别设 GIT_AUTHOR_*，release commit 作者就用 semantic-release-bot：semantic-release 把名字含
+          # auth / key / token 等的变量当密钥，值在发版说明里一律换成 [secure]，作者名 yupanzi 会让
+          # 仓库链接全断。往这一步加变量同理，值别是普通单词
           # release commit 是普通 git commit，不关的话会跑 husky 钩子：门禁 check job 已跑过，
           # commitlint 还会拿自动生成的发版说明去卡行长
           HUSKY: 0
