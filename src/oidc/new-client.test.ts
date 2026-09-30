@@ -1,21 +1,33 @@
 import { describe, expect, it } from "vitest";
 
-import { oidcClientsJsonSchema } from "~/domain/oidc-client";
+import { authJsonSchema } from "~/domain/config-json";
 
 import { newOidcClient } from "./new-client";
 
 const REDIRECT = "https://sso.example.com/source/oauth/callback/dingorg/";
 
 describe("newOidcClient", () => {
-	it("生成的 client 原样过 OIDC_CLIENTS_JSON 的校验", () => {
+	it("生成的 client 原样过 AUTH_JSON 的校验", () => {
 		const r = newOidcClient({
 			name: "authentik-prod",
 			redirectUris: [REDIRECT],
 		});
 		expect(r.success).toBe(true);
 
-		const parsed = oidcClientsJsonSchema.parse(JSON.stringify([r.data]));
+		const parsed = authJsonSchema.parse(JSON.stringify([r.data]));
 		expect(parsed).toEqual([r.data]);
+	});
+
+	it("可带正则回调，也原样过校验", () => {
+		const r = newOidcClient({
+			name: "preview",
+			redirectUris: [REDIRECT],
+			redirectUriRegexes: [
+				String.raw`https://pr-\d+\.preview\.example\.com/cb`,
+			],
+		});
+		expect(r.success).toBe(true);
+		expect(authJsonSchema.parse(JSON.stringify([r.data]))).toEqual([r.data]);
 	});
 
 	it("每次的 id 与 secret 都不同，secret 是 32 字节的 base64url", () => {

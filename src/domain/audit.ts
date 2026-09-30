@@ -1,11 +1,16 @@
+import { z } from "zod";
+
 export const AUDIT_STATUSES = ["success", "failure"] as const;
 
 /**
- * - `app`：调 REST 面的钉钉应用，actorId 是 AppKey（鉴权失败时记来件声称的那个）
+ * - `api_key`：调 REST 面的 API key，actorId 是 key 的 id（鉴权失败时记来件声称的那个，
+ *   格式不对为空），actorName 是 key 的 name（只在鉴权通过时有）
  * - `dingtalk`：扫码登录的人，actorId 是 unionId；身份确定之前被拒的为空
- * - `system`：没有写入方，只是列默认值（删它要重建 PG 枚举）
+ * - `system`：orgsync 的定时刷新，actorId 为空；也是列默认值
+ *
+ * ⚠️ 只加不删：删值要重建 PG 枚举，不再写入的值也留着。
  */
-export const AUDIT_ACTOR_TYPES = ["app", "dingtalk", "system"] as const;
+export const AUDIT_ACTOR_TYPES = ["api_key", "dingtalk", "system"] as const;
 export type AuditActorType = (typeof AUDIT_ACTOR_TYPES)[number];
 
 export type AuditDetails = {
@@ -20,8 +25,19 @@ export const MAX_REQUEST_ID_LENGTH = 64;
 /** `ip` 列宽。信任代理时它来自 X-Forwarded-For，任何人都能造 */
 export const MAX_IP_LENGTH = 64;
 
-/** `actor_id` 列宽。来件能造，超长的在凭证解析处拒收 */
+/** `actor_id` 列宽。来件能造：REST 面只收定长的 key id（`parseApiKeyId`） */
 export const MAX_ACTOR_ID_LENGTH = 255;
+
+/**
+ * `AUTH_JSON` 各项的 name，两种 type 共用一条规则：它进审计（client 的进 `target_name`，
+ * API key 的进 `actor_name`）。不分 type 全局唯一，见 `~/domain/config-json`
+ */
+export const authEntryNameSchema = z
+	.string()
+	.trim()
+	.min(1)
+	.max(64)
+	.refine((v) => !/\p{Cc}/u.test(v), "name 不能含控制字符");
 
 /** 超长截断并留 `…`，看得出被截过 */
 function clamp(v: string, max: number): string {

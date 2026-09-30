@@ -18,20 +18,15 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end }}
 {{- end }}
 {{/* 从 ingress.host 派生：再填一遍只会制造配错机会 */}}
-{{- if and .Values.ingress.host (not .Values.env.OIDC_ISSUER) }}
-- name: OIDC_ISSUER
-  value: {{ printf "%s://%s/oidc" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host | quote }}
-{{- end }}
-{{/* 从 server.port 派生：失配时探针永远打不通 */}}
-{{- if not .Values.env.IDP_PORT }}
-- name: IDP_PORT
-  value: {{ .Values.server.port | quote }}
+{{- if and .Values.ingress.host (not .Values.env.PUBLIC_ORIGIN) }}
+- name: PUBLIC_ORIGIN
+  value: {{ printf "%s://%s" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host | quote }}
 {{- end }}
 {{- end -}}
 
 {{/*
 一次性任务只注入点名的 Secret 键。入参：dict "root" <根上下文> "keys" <键名列表>。
-别换回 envFrom：会把钉钉 AppSecret 与所有 client secret 注入用不到它们的 Pod。
+别换回 envFrom：会把钉钉 AppSecret 与 AUTH_JSON（全部 client secret 与 API key）注入用不到它们的 Pod。
 */}}
 {{- define "dingorg.secretEnv" -}}
 {{- range .keys }}
@@ -71,8 +66,6 @@ template:
         env:
           {{- include "dingorg.secretEnv" (dict "root" .root "keys" .cfg.secretKeys) | nindent 10 }}
           {{- include "dingorg.logLevelEnv" .root | nindent 10 }}
-          - name: DINGORG_URL
-            value: {{ include "dingorg.serviceUrl" .root | quote }}
         resources:
           requests: { cpu: 50m, memory: 128Mi }
           limits: { memory: 512Mi }
@@ -84,11 +77,6 @@ template:
 - name: LOG_LEVEL
   value: {{ . | quote }}
 {{- end }}
-{{- end -}}
-
-{{/* 集群内 Service 地址。orgsync 走它而不绕 Ingress：同步拉取可能超过 Ingress 的读超时 */}}
-{{- define "dingorg.serviceUrl" -}}
-http://{{ include "dingorg.name" . }}
 {{- end -}}
 
 {{- define "dingorg.envFrom" -}}

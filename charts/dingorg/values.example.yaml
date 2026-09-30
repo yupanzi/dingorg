@@ -14,13 +14,9 @@ secretVersion: '2026-09-04'
 ingress:
   enabled: true
   className: nginx
-  # OIDC_ISSUER 从它派生
+  # PUBLIC_ORIGIN 从它派生
   host: dingorg.example.com
   tls: true
-
-env:
-  # Ingress 后面必须是 '1'
-  AUTH_TRUST_PROXY_HEADERS: '1'
 
 server:
   replicas: 2

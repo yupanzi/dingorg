@@ -3,12 +3,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb } from "~/db";
 import { appSecrets } from "~/db/schema";
 import { accessTokenKey } from "~/resources";
-import {
-	FetchDeniedError,
-	type FetchGate,
-	getAccessToken,
-	invalidateAccessToken,
-} from "./access-token";
+import { getAccessToken, invalidateAccessToken } from "./access-token";
 import type { DingtalkCredentials } from "./client";
 
 /**
@@ -40,29 +35,7 @@ vi.mock("./client", async (importOriginal) => ({
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSec = () => Math.floor(Date.now() / 1000);
-const cred = (appKey: string, secret = GOOD) => ({
-	clientId: appKey,
-	clientSecret: secret,
-});
-
-// 永远放行：这里测的是缓存、单飞与条件写，不是限流
-const OPEN: FetchGate = { admit: () => true, failed: () => {} };
-
-/** 记下闸门被问了什么；`allow` 决定放不放行 */
-function spyGate(allow = true) {
-	const admits: boolean[] = [];
-	let failures = 0;
-	const gate: FetchGate = {
-		admit: (renewal) => {
-			admits.push(renewal);
-			return allow;
-		},
-		failed: () => {
-			failures += 1;
-		},
-	};
-	return { gate, admits, failures: () => failures };
-}
+const cred = (appKey: string) => ({ clientId: appKey, clientSecret: GOOD });
 
 maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 	const db = createDb(dbUrl ?? "", { maxConnections: 3 });
@@ -126,7 +99,7 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 
 	it("同进程并发只申请一次（进程内单飞）", async () => {
 		const tokens = await Promise.all(
-			Array.from({ length: 10 }, () => getAccessToken(db, cred(APP_A), OPEN)),
+			Array.from({ length: 10 }, () => getAccessToken(db, cred(APP_A))),
 		);
 
 		expect(fetchCount).toBe(1);
@@ -134,7 +107,7 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 	});
 
 	it("申请成功后写回 PG，且不落 secret 明文", async () => {
-		const token = await getAccessToken(db, cred(APP_A), OPEN);
+		const token = await getAccessToken(db, cred(APP_A));
 		const row = await readPgToken(APP_A);
 
 		expect(row?.access_token).toBe(token);
@@ -142,85 +115,25 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 	});
 
 	it("进程内缓存失效后从 PG 读回，不重复申请", async () => {
-		const first = await getAccessToken(db, cred(APP_A), OPEN);
+		const first = await getAccessToken(db, cred(APP_A));
 		expect(fetchCount).toBe(1);
 
 		await clearProcessCache(APP_A); // 模拟新进程 / 冷启动：进程内空，PG 里还有
 
-		expect(await getAccessToken(db, cred(APP_A), OPEN)).toBe(first);
+		expect(await getAccessToken(db, cred(APP_A))).toBe(first);
 		expect(fetchCount).toBe(1);
 	});
 
-	// appKey 不是秘密：两级缓存命中都要求 secret 哈希相符
-	it("错误的 secret 命中不了别人留下的缓存", async () => {
-		await getAccessToken(db, cred(APP_A), OPEN);
-
-		// 闸门被问到 = 两级缓存都没命中；不放行，所以也不会真的外呼
-		const deny = spyGate(false);
+	it("钉钉拒绝时抛出，PG 里不留东西", async () => {
 		await expect(
-			getAccessToken(db, cred(APP_A, "bad"), deny.gate),
-		).rejects.toBeInstanceOf(FetchDeniedError);
-		await clearProcessCache(APP_A); // 只剩 PG 那一级
-		await expect(
-			getAccessToken(db, cred(APP_A, "bad"), deny.gate),
-		).rejects.toBeInstanceOf(FetchDeniedError);
-
-		expect(deny.admits).toEqual([false, false]);
-		expect(fetchCount).toBe(1);
-	});
-
-	it("闸门在单飞之内：并发的同一对凭证只问一次、失败只报一次", async () => {
-		nextDelayMs = 100;
-		const ok = spyGate();
-		await Promise.all(
-			Array.from({ length: 10 }, () =>
-				getAccessToken(db, cred(APP_A), ok.gate),
-			),
-		);
-		expect(ok.admits).toEqual([false]);
-
-		const bad = spyGate();
-		await Promise.allSettled(
-			Array.from({ length: 5 }, () =>
-				getAccessToken(db, cred(APP_B, "bad"), bad.gate),
-			),
-		);
-		expect(bad.admits).toHaveLength(1);
-		expect(bad.failures()).toBe(1);
-	});
-
-	it("token 到期后，同一个 secret 算续期、换个 secret 不算", async () => {
-		nextExpiresIn = 0; // 一拿到就判过期
-		await getAccessToken(db, cred(APP_A), OPEN);
-
-		const spy = spyGate(false);
-		const attempt = (secret: string) =>
-			getAccessToken(db, cred(APP_A, secret), spy.gate).catch(() => undefined);
-
-		await attempt(GOOD);
-		await attempt("bad");
-		await clearProcessCache(APP_A); // 模拟新进程：只剩 PG 那一级
-		await attempt(GOOD);
-		await attempt("bad");
-
-		expect(spy.admits).toEqual([true, false, true, false]);
-	});
-
-	it("单飞不跨 secret：并发时错误的 secret 不会搭上正确那次申请", async () => {
-		nextDelayMs = 100;
-		const [good, bad] = await Promise.allSettled([
-			getAccessToken(db, cred(APP_A), OPEN),
-			getAccessToken(db, cred(APP_A, "bad"), OPEN),
-		]);
-
-		expect(good.status).toBe("fulfilled");
-		expect(bad.status).toBe("rejected");
-		expect(fetchCount).toBe(2);
+			getAccessToken(db, { clientId: APP_A, clientSecret: "bad" }),
+		).rejects.toThrow("钉钉拒绝");
+		expect(await readPgToken(APP_A)).toBeUndefined();
 	});
 
 	it("两个 appKey 的 token 互不覆盖、互不串用", async () => {
-		const a = await getAccessToken(db, cred(APP_A), OPEN);
-		const b = await getAccessToken(db, cred(APP_B), OPEN);
+		const a = await getAccessToken(db, cred(APP_A));
+		const b = await getAccessToken(db, cred(APP_B));
 
 		expect(a).not.toBe(b);
 		expect((await readPgToken(APP_A))?.access_token).toBe(a);
@@ -229,7 +142,7 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 
 	it("invalidate 不会删掉别人刚写回的新 token（compare-and-delete）", async () => {
 		// 本进程先拿到 tok-1，进程缓存与 PG 都是它
-		const mine = await getAccessToken(db, cred(APP_A), OPEN);
+		const mine = await getAccessToken(db, cred(APP_A));
 
 		// 别的副本已经把共享层换成了新 token
 		await writeFromOtherReplica(APP_A, "tok-newer");
@@ -242,7 +155,7 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 
 	// 只清进程内的话，下一次读会从 PG 命中同一个坏值
 	it("invalidate 会删掉 PG 里仍等于坏值的那份", async () => {
-		const mine = await getAccessToken(db, cred(APP_A), OPEN);
+		const mine = await getAccessToken(db, cred(APP_A));
 
 		await invalidateAccessToken(db, APP_A, mine);
 		expect(await readPgToken(APP_A)).toBeUndefined();
@@ -255,7 +168,7 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 	it("PG 条件写不会让慢的旧请求盖住新 token", async () => {
 		nextExpiresIn = 3600; // 比下面那个副本写的更早过期
 		nextDelayMs = 400;
-		const pending = getAccessToken(db, cred(APP_A), OPEN);
+		const pending = getAccessToken(db, cred(APP_A));
 
 		await sleep(150);
 		await writeFromOtherReplica(APP_A, "tok-newer");

@@ -29,6 +29,7 @@ RUN pnpm build
 
 # ---------- 运行时 ----------
 FROM base AS runner
+# 别删：PUBLIC_ORIGIN 只在非 production 时有默认值，镜像里缺了要启动失败
 ENV NODE_ENV=production
 # 不设 TZ，一律 UTC。真要设必须同时 apk add tzdata，否则 musl 静默回落 UTC
 RUN addgroup -S app && adduser -S app -G app
@@ -40,7 +41,7 @@ COPY --chown=app:app drizzle ./drizzle
 COPY --chown=app:app package.json ./
 
 USER app
-# 与 IDP_PORT 默认值相同；改了 IDP_PORT 的话 HEALTHCHECK 打空端口（k8s 不跑它）
+# 与 src/env.ts 的 LISTEN_PORT 一致
 EXPOSE 3080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 	CMD wget -qO- http://127.0.0.1:3080/healthz || exit 1

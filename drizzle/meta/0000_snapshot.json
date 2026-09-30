@@ -411,7 +411,7 @@
 		"public.dingorg_audit_actor_type": {
 			"name": "dingorg_audit_actor_type",
 			"schema": "public",
-			"values": ["app", "dingtalk", "system"]
+			"values": ["api_key", "dingtalk", "system"]
 		},
 		"public.dingorg_audit_status": {
 			"name": "dingorg_audit_status",

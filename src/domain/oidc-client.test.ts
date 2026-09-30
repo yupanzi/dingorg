@@ -2,9 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { formatIssues } from "~/env";
 
-import { oidcClientsJsonSchema, redirectUriSchema } from "./oidc-client";
+import { authJsonSchema } from "./config-json";
+import {
+	compileRedirectUriRegexes,
+	matchesRedirectUriRegex,
+	redirectUriRegexSchema,
+	redirectUriSchema,
+} from "./oidc-client";
 
-// 回调地址校验决定授权码能交到哪儿。要加正则回调，得同时补开放重定向的护栏用例
+// 回调地址校验决定授权码能交到哪儿。放宽匹配规则时，先补开放重定向的护栏用例
 
 describe("redirectUriSchema", () => {
 	it("放行 https", () => {
@@ -51,9 +57,62 @@ describe("redirectUriSchema", () => {
 	});
 });
 
-describe("oidcClientsJsonSchema", () => {
+describe("正则回调地址", () => {
+	const allowed = (regexes: string[], value: string) =>
+		matchesRedirectUriRegex(compileRedirectUriRegexes(regexes), value);
+	const PREVIEW = String.raw`https://pr-\d+\.preview\.example\.com/callback`;
+
+	it("整串命中才放行", () => {
+		expect(
+			allowed([PREVIEW], "https://pr-7.preview.example.com/callback"),
+		).toBe(true);
+		for (const value of [
+			"https://pr-7.preview.example.com/callbackX",
+			"https://pr-7.preview.example.com.evil.io/callback",
+			"https://evil.io/?https://pr-7.preview.example.com/callback",
+		]) {
+			expect(allowed([PREVIEW], value)).toBe(false);
+		}
+	});
+
+	// 手写 `^a|b$` 只锚住了两头各一支：包成 `^(?:…)$` 后每一支都是整串
+	it("用了 | 也是每一支整串匹配", () => {
+		const alt = String.raw`https://a\.example\.com/cb|https://b\.example\.com/cb`;
+		expect(allowed([alt], "https://b.example.com/cb")).toBe(true);
+		expect(allowed([alt], "https://a.example.com/cb.evil.io")).toBe(false);
+		expect(allowed([alt], "https://evil.io/https://b.example.com/cb")).toBe(
+			false,
+		);
+	});
+
+	it("命中了正则也得过 redirectUriSchema：明文 http、fragment、超长都拒", () => {
+		const loose = String.raw`https?://app\.example\.com/cb.*`;
+		expect(allowed([loose], "https://app.example.com/cb?x=1")).toBe(true);
+		for (const value of [
+			"http://app.example.com/cb",
+			"https://app.example.com/cb#frag",
+			`https://app.example.com/cb?q=${"a".repeat(500)}`,
+		]) {
+			expect(allowed([loose], value)).toBe(false);
+		}
+	});
+
+	it("没配正则：一律不放行", () => {
+		expect(allowed([], "https://app.example.com/cb")).toBe(false);
+	});
+
+	// 单独能编译才收：`a)|(b` 这种一包 `^(?:…)$` 就会把锚点撑破
+	it("不是合法正则的拒绝，含撑破包裹的括号", () => {
+		for (const bad of ["(", "a)|(b", "[z-a]"]) {
+			expect(redirectUriRegexSchema.safeParse(bad).success).toBe(false);
+		}
+	});
+});
+
+describe("AUTH_JSON 的 oidc 项", () => {
 	const SECRET = "s3cr3t-value-that-must-never-be-echoed-0123";
 	const client = (over: Record<string, unknown> = {}) => ({
+		type: "oidc",
 		name: "authentik-prod",
 		id: "6f1c2a0e-9b7d-4c1e-8f3a-2d5e7b9c0a14",
 		secret: SECRET,
@@ -61,7 +120,7 @@ describe("oidcClientsJsonSchema", () => {
 		...over,
 	});
 	const parse = (value: unknown) =>
-		oidcClientsJsonSchema.safeParse(
+		authJsonSchema.safeParse(
 			typeof value === "string" ? value : JSON.stringify(value),
 		);
 	// 用生产的 formatIssues：验的是真正进启动日志的那份
@@ -78,7 +137,9 @@ describe("oidcClientsJsonSchema", () => {
 	});
 
 	it("至少一个 client", () => {
-		expect(parse([]).success).toBe(false);
+		expect(messages([])).toEqual([
+			expect.stringContaining("至少要有一个 type 为 oidc"),
+		]);
 	});
 
 	it("多出来的键直接拒绝", () => {
@@ -116,10 +177,31 @@ describe("oidcClientsJsonSchema", () => {
 			secret: `${SECRET}-2`,
 		});
 		expect(messages([client(), other])).toEqual([
-			expect.stringMatching(/^1\.name: .*第 0 个/),
+			expect.stringMatching(/^1\.name: .*第 0 项/),
 		]);
 		expect(messages([client(), client({ name: "staging" })])).toEqual([
-			expect.stringMatching(/^1\.id: .*第 0 个/),
+			expect.stringMatching(/^1\.id: .*第 0 项/),
+		]);
+	});
+
+	it("正则回调可选，但至少要有一条精确回调：上游不收空的 redirect_uris", () => {
+		expect(
+			parse([
+				client({
+					redirectUriRegexes: [String.raw`https://x\.example\.com/cb`],
+				}),
+			]).success,
+		).toBe(true);
+		expect(
+			messages([
+				client({
+					redirectUris: [],
+					redirectUriRegexes: [String.raw`https://x\.example\.com/cb`],
+				}),
+			]),
+		).toEqual([expect.stringMatching(/^0\.redirectUris: .*精确回调地址/)]);
+		expect(messages([client({ redirectUriRegexes: ["("] })])).toEqual([
+			expect.stringMatching(/^0\.redirectUriRegexes\.0: 不是合法的正则/),
 		]);
 	});
 

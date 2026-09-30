@@ -9,7 +9,7 @@ import { registerApi } from "./api";
 import type { Deps } from "./deps";
 import { normalizeRequestPath } from "./domain/audit";
 import type { OrgApiErrorBody } from "./domain/org-api";
-import type { IdpEnv } from "./env";
+import { type IdpEnv, trustsProxyHeaders } from "./env";
 import { registerInteractionRoutes } from "./interaction/routes";
 import { logger } from "./log";
 import { mountOidc } from "./oidc/mount";
@@ -38,7 +38,7 @@ export async function buildApp(
 	);
 	const app = Fastify({
 		loggerInstance,
-		trustProxy: env.AUTH_TRUST_PROXY_HEADERS,
+		trustProxy: trustsProxyHeaders(env),
 	});
 
 	app.setErrorHandler((err: FastifyError, req, reply) => {
@@ -61,7 +61,7 @@ export async function buildApp(
 	await mountOidc(app, provider);
 	registerInteractionRoutes(app, deps, env, provider);
 
-	await registerApi(app, deps);
+	await registerApi(app, deps, env);
 	registerHealthz(app, deps);
 
 	return app;

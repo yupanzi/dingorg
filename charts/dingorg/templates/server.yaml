@@ -27,7 +27,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ['node', 'dist/server.js']
           ports:
-            - containerPort: {{ .Values.server.port }}
+            # 与 src/env.ts 的 LISTEN_PORT 一致；探针与 Service 按名字引用它
+            - name: http
+              containerPort: 3080
           env:
             {{- include "dingorg.env" . | nindent 12 }}
           envFrom:
@@ -35,11 +37,11 @@ spec:
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
           readinessProbe:
-            httpGet: { path: /healthz, port: {{ .Values.server.port }} }
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /healthz, port: {{ .Values.server.port }} }
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 20
             periodSeconds: 30
 ---
@@ -53,7 +55,7 @@ spec:
   type: ClusterIP
   ports:
     - port: 80
-      targetPort: {{ .Values.server.port }}
+      targetPort: http
       name: http
   selector:
     app.kubernetes.io/name: {{ include "dingorg.name" . }}

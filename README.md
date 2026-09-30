@@ -3,11 +3,13 @@
 把一个**钉钉企业内部应用**变成组织的身份基础设施。只做两件事：
 
 1. **钉钉认证 → 标准 OIDC**：下游用任意标准 OIDC 客户端库接入，底层由钉钉扫码完成认证。
-2. **组织架构快照 → REST 出口**：调用方出示**自己钉钉应用的 AppKey/AppSecret**，读到这个
-   应用可见范围内的成员与部门（含 unionId、企业邮箱、职级、部门主管）。快照按 appKey 隔离，
-   存在 Postgres 里。
+2. **组织架构快照 → REST 出口**：调用方出示本服务配发的 **API key**，读到自有钉钉应用可见范围内
+   的成员与部门（含 unionId、企业邮箱、职级、部门主管）。钉钉凭证只在本服务手里，调用方碰不到；
+   快照存在 Postgres 里。
 
-外部依赖只有 Postgres。没有管理界面，也没有自己的 API 密钥。`GET /api/v1` 列出全部端点与鉴权方式。
+外部依赖只有 Postgres。没有管理界面；凭证只有两种静态配置：登录用的 OIDC client 与 REST 用的
+API key，同放在 `AUTH_JSON` 一个数组里、按 `type` 区分，两者互不相干。
+`GET /api/v1` 列出全部端点与鉴权方式。
 
 ## 架构
 
@@ -15,23 +17,25 @@
                   ┌──────────── dingorg（单进程）─────────────┐
   钉钉扫码 ──────► │  /oidc/*        OIDC Provider            │ ──► 下游应用
                   │  /oidc/interaction  钉钉登录交互          │     (authentik…)
-                  │  /api/v1/*      组织快照（按 appKey 隔离）│ ◄── 内部系统
-                  └──────────────────┬───────────────────────┘     （出示自己的
-                          ▲          │                              AppKey/Secret）
-  cron orgsync ───────────┘          │
-  （每天 POST /api/v1/sync，       Postgres
-    出示自有 AppKey/Secret）          ▲
+                  │  /api/v1/*      组织快照（自有应用）      │ ◄── 内部系统
+                  └──────────────────┬───────────────────────┘     （出示
+                                     │                              API key）
+                                  Postgres
+                                     ▲
+  cron orgsync ──────────────────────┤  （每天拉一次钉钉，与 POST /api/v1/sync 同一份刷新）
   cron oidcpurge ────────────────────┘  （清理 OIDC 过期工件）
 ```
 
 一个常驻进程 + 三个跑完即退的任务（migrate、oidcpurge、orgsync），共用一个镜像。
 
-快照只有一种刷新方式 —— `POST /api/v1/sync`，常驻进程自己不刷新：
+快照只有一份 —— 自有应用（`DINGTALK_APP_KEY`）的。它既是 REST 出口的数据，也是 **OIDC 准入的
+唯一依据**。刷新只有一份实现，两个入口，常驻进程自己不定时刷新：
 
-- **自有应用**（`DINGTALK_APP_KEY`）的快照是 **OIDC 准入的唯一依据**，由每日 cron orgsync
-  （默认 UTC 04:00）拿自有凭证调它。离职生效、新人可登录的窗口因此**最长约 24 小时**。
-  ⚠️ **空库时谁都登录不进来**：K8s 部署时 hook 会跑一次，本地要手动 `pnpm orgsync`。
-- **别的应用**的快照不按时间过期：第一次读时当场拉取，之后原样返回，要更新就自己调 `POST /api/v1/sync`。
+- 每日 cron orgsync（默认 UTC 04:00）直接调刷新，不经 HTTP、不需要凭证。离职生效、新人可登录
+  的窗口因此**最长约 24 小时**。
+- `POST /api/v1/sync`：持 API key 的调用方手动触发。
+- ⚠️ **空库时谁都登录不进来**：K8s 部署时 hook 会跑一次，本地要手动 `pnpm orgsync`。
+- 读的时候不按时间过期：从没拉成功过才当场拉一次，之后原样返回。
 
 ## 快速开始
 
@@ -40,14 +44,14 @@
 cp .env.example .env
 pnpm install
 
-# 2. 生成一个下游 OIDC client，输出的那行 JSON 填进 .env 的 OIDC_CLIENTS_JSON
-pnpm -s oidc:new-client --name local --redirect-uri http://localhost:9000/callback
+# 2. 生成一个下游 OIDC client，输出的那行 JSON 填进 .env 的 AUTH_JSON
+pnpm -s auth:oidc --name local --redirect-uri http://localhost:9000/callback
 
 # 3. 建表、起服务
 pnpm db:migrate
 pnpm dev          # http://localhost:3080
 
-# 4. 拉一次自有应用的快照（不拉的话谁都登录不进来）
+# 4. 拉一次自有应用的快照（不拉的话谁都登录不进来；直连库与钉钉，不依赖服务在跑）
 pnpm orgsync
 ```
 
@@ -57,7 +61,7 @@ pnpm orgsync
 curl -s localhost:3080/healthz
 curl -s localhost:3080/api/v1 | jq
 curl -s localhost:3080/oidc/.well-known/openid-configuration | jq
-curl -s -u "<AppKey>:<AppSecret>" localhost:3080/api/v1/sync | jq
+curl -s -H "Authorization: Bearer $API_KEY" localhost:3080/api/v1/sync | jq   # 配了 API key 的话
 ```
 
 ## 钉钉开放平台配置清单
@@ -67,22 +71,28 @@ curl -s -u "<AppKey>:<AppSecret>" localhost:3080/api/v1/sync | jq
 | 项 | 位置 | 漏了会怎样 |
 | --- | --- | --- |
 | AppKey / AppSecret | 应用凭证 | 填进 `DINGTALK_APP_KEY` / `DINGTALK_APP_SECRET` |
-| **服务器出口 IP 白名单** | 开发配置 | ⚠️ 组织拉取报 `60020`，但 `gettoken` 正常 —— 极易误判成凭证问题 |
+| **本服务的出口 IP 白名单** | 开发配置 | ⚠️ 组织拉取报 `60020`，但 `gettoken` 正常 —— 极易误判成凭证问题 |
 | **`Contact.User.Read`** 权限点 | 权限管理 | ⚠️ 扫码后返回 `AccessTokenPermissionDenied` |
 | 通讯录**个人信息**读权限 | 权限管理 | ⚠️ unionId 与企业邮箱**静默缺失**：所有人都没有 email，缺 unionId 的人登录不了（它是 `sub`）|
-| 回调域名 | 登录与分享 | 填 `OIDC_ISSUER` 的 origin（本地 `http://localhost:3080`），改 issuer 或端口时同步改 |
+| 回调域名 | 登录与分享 | 填 `PUBLIC_ORIGIN`（本地 `http://localhost:3080`），改它时同步改 |
 
 ## 下游如何接入（OIDC）
 
-每个下游一个 client，由部署方**在本机**生成（在 Pod 里跑 secret 会进日志），没有注册端点：
+每个下游一个 client，由部署方**在本机**生成（在 Pod 里跑 secret 会进日志），没有注册端点。
+client 只管登录，不能调 REST 面（那是 API key 的事，见「组织数据 API」）：
 
 ```bash
-pnpm -s oidc:new-client --name authentik-prod \
+pnpm -s auth:oidc --name authentik-prod \
   --redirect-uri https://<authentik>/source/oauth/callback/<slug>/
-# stdout：[{"name":"authentik-prod","id":"<uuid>","secret":"<43 位>","redirectUris":[...]}]
+# stdout：[{"type":"oidc","name":"authentik-prod","id":"<uuid>","secret":"<43 位>","redirectUris":[...]}]
+
+# 预览环境等动态地址：再加 --redirect-uri-regex（整串匹配的正则，可多个），精确地址仍至少一条
+pnpm -s auth:oidc --name preview --redirect-uri https://pr-1.preview.example.com/callback \
+  --redirect-uri-regex 'https://pr-\d+\.preview\.example\.com/callback'
 ```
 
-多个下游就是 `OIDC_CLIENTS_JSON` 数组里的多个对象，改完 Secret 要 bump `secretVersion`。下游填：
+多个下游就是 `AUTH_JSON` 数组里的多个 oidc 项（`name` 在整个数组里唯一，不分 type），改完 Secret
+要 bump `secretVersion`。下游填：
 
 | 项 | 值 |
 | --- | --- |
@@ -92,8 +102,11 @@ pnpm -s oidc:new-client --name authentik-prod \
 | 流程 | authorization code，**强制 PKCE** |
 | token 端点认证 | `client_secret_basic` 或 `client_secret_post` |
 
-- 回调地址**只有精确匹配**，必须 https（loopback 例外）、不能带 `#`，只对登记它的 client 有效。
+- 回调地址：`redirectUris` 精确匹配；可选的 `redirectUriRegexes` 是**整串匹配**的正则，命中的
+  地址仍须 https（loopback 例外）、不带 `#`、不超过 500 字符。两种都只对登记它的 client 有效。
   填错是进程启动失败，并指出哪个 client 的哪一条。
+- ⚠️ **正则写宽了就是开放重定向**，授权码会交到别人手里：`.` 要转义（JSON 里写 `\\.`），别用
+  `.*` 跨过 host。能列举的地址就用 `redirectUris`。
 - client 凭证与钉钉无关：`id` 必须是 UUID，`secret` 不得等于 `DINGTALK_APP_SECRET`。手写的
   secret 只能含 `A-Z a-z 0-9 - _ . ~`（标准 base64 的 `+ / =` 不行：Basic 认证会做 form 解码）。
 - ⚠️ **每个下游都能登录全组织的人**：准入只看「在不在自有应用的通讯录里」。谁能用哪个下游由
@@ -120,24 +133,44 @@ id_token 与 userinfo 都给出这些，**集合是固定的**：
 access_token（1 小时）仍然可用**，下游自己的会话更在本系统之外。要立即切断：
 
 1. 手动触发一次刷新：`kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`，
-   或 `curl -X POST -u "$APPKEY:$APPSECRET" https://<域名>/api/v1/sync`；
+   或 `curl -X POST -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/sync`（任一 API key）；
 2. 再去各个下游分别登出。
 
 ## 组织数据 API
 
-凭证是**你自己钉钉应用的 AppKey/AppSecret**（HTTP Basic），钉钉肯为它发 token 就通过，没有
-白名单；读到的是这个应用在钉钉后台**可见范围内**的通讯录。你的应用同样要配出口 IP 白名单与
-通讯录权限点（见上面的清单），「个人信息」权限点不开则 `email` 与 `dingtalk.unionid` 为空。
+凭证是部署方配发的 **API key**（`Authorization: Bearer dok_…`），与 OIDC client 凭证、钉钉凭证
+都无关，也不接受它们。每个调用方一把，由部署方**在本机**生成：
+
+```bash
+pnpm -s auth:apikey --name hr-system
+# stdout：[{"type":"apikey","name":"hr-system","key":"dok_<8 位 hex>_<43 位随机>"}] → 并进 AUTH_JSON，key 交给调用方
+```
+
+两个生成命令都可以带 `--merge`：从 stdin 读现有的 `AUTH_JSON`，输出接上新项的完整数组，并按启动时
+同一份规则整体校验（重名等在生成时就报）。给已部署的实例加一项：
+
+```bash
+kubectl get secret dingorg-app -n <ns> -o jsonpath='{.data.AUTH_JSON}' | base64 -d \
+  | pnpm -s auth:apikey --name bi --merge     # stdout 是新的完整 AUTH_JSON，替换 Secret 后 bump secretVersion
+```
+
+- `AUTH_JSON` 里没有 apikey 项就是不开 REST 面（全部 401），登录与每日同步不受影响。
+- 配置里**是 key 明文**，丢了能从 Secret 里取回。⚠️ 也就是说能读这个 Secret 的人都能读全组织
+  通讯录（API key 不受钉钉 IP 白名单约束），Secret 的读权限要按此收紧。
+- key 泄漏了只影响它自己：删掉 `AUTH_JSON` 里那一项（或换成新生成的）+ bump
+  `secretVersion`，登录与别的调用方都不受影响。加调用方同理。
+- ⚠️ **每把 key 读到的都是全组织通讯录**（自有应用在钉钉后台的可见范围），不按调用方划范围。
+- 「个人信息」权限点没开时 `email` 与 `dingtalk.unionid` 为空（见上面的清单）。
 
 | 端点 | 响应 |
 | --- | --- |
 | `GET /api/v1/org/users` | `{ users, total, fetchedAt }` |
 | `GET /api/v1/org/departments` | `{ departments, total, fetchedAt }`，部门是 `{ id, parentId, name, ancestorIds }`，根部门 id 为 1、名字是企业名 |
-| `GET /api/v1/sync` | `{ appKey, state, fetchedAt, attemptedAt, error, userCount, deptCount }`，`state` 为 `never` / `failed` / `ok` |
+| `GET /api/v1/sync` | `{ state, fetchedAt, attemptedAt, error, userCount, deptCount }`，`state` 为 `never` / `failed` / `ok` |
 | `POST /api/v1/sync` | 同上，外加 `refreshed`。**同步地拉完再返回** |
 
 ```bash
-curl -s -u "$APPKEY:$APPSECRET" https://<域名>/api/v1/org/users | jq
+curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/org/users | jq
 ```
 
 - 第一次调用当场拉取（几百人要几秒到几十秒），之后原样返回；`fetchedAt` 是数据时刻。
@@ -145,10 +178,9 @@ curl -s -u "$APPKEY:$APPSECRET" https://<域名>/api/v1/org/users | jq
   从没拉成功过则回 `503`。
 - 快照里只有当前可见的人，离职者直接消失。刷新失败时旧快照原样保留。
 - 错误体统一是 `{ "error": { "code", "message" } }`：
-  - `401 unauthorized`：凭证不对，**一律不说原因**。同一 appKey 校验失败后 10 秒内不再替它
-    向钉钉校验；已验证过的 secret 在 token 到期后续期不受影响。
-  - `502 dingtalk_error`：拉取时钉钉报错，带 `dingtalk: { errcode, code, status }`（最常见是
-    `60020`：你的应用没把本服务的出口 IP 加进白名单）。
+  - `401 unauthorized`：凭证不对，**一律不说原因**（没带、格式不对、未知 id、key 错都是它）。
+  - `502 dingtalk_error`：拉取时钉钉报错（含本服务的钉钉 token 申请失败），带
+    `dingtalk: { errcode, code, status }`（最常见是 `60020`：本服务的出口 IP 不在自有应用的白名单里）。
   - `503 snapshot_unavailable`：从没拉成功过、上一次又刚失败；`message` 带原因，`Retry-After` 给出秒数。
   - `504 dingtalk_timeout`：请求钉钉超时。
 
@@ -181,9 +213,9 @@ curl -s -u "$APPKEY:$APPSECRET" https://<域名>/api/v1/org/users | jq
 
 ## 审计
 
-认证（成功与被拒）与组织 API 的每一次调用（**含鉴权失败**，记来件声称的 appKey）都落在
-`dingorg_audit_log`。扫码回调在拿到身份之前被拒的也记，`actor_id` 为空。secret 与钉钉授权码
-不进审计。没有查询界面，用 SQL：
+认证（成功与被拒）与组织 API 的每一次调用（**含鉴权失败**，记来件声称的 key id）都落在
+`dingorg_audit_log`。REST 调用的 `actor_type` 是 `api_key`，`actor_name` 是 key 的 name；
+每日 orgsync 的是 `system`。扫码回调在拿到身份之前被拒的也记，`actor_id` 为空。secret、key 与钉钉授权码不进审计。没有查询界面，用 SQL：
 
 ```sql
 select at, action, status, actor_type, actor_id, ip, details
@@ -214,15 +246,18 @@ where request_id = '<reqId>' and at > now() - interval '1 hour';
 ## 部署（K8s / Helm）
 
 ```bash
-# 1. 先建 Secret（chart 不自建，且必须先于 chart 存在）
+# 1. 先建 Secret（chart 不自建，且必须先于 chart 存在）。AUTH_JSON 用生成命令攒：先生成 client，
+#    再用 --merge 接上 API key（没有 REST 调用方就只要第一行）
+AUTH=$(pnpm -s auth:oidc --name authentik-prod --redirect-uri https://<authentik>/source/oauth/callback/<slug>/)
+AUTH=$(echo "$AUTH" | pnpm -s auth:apikey --name hr-system --merge)
 kubectl create namespace dingorg-prod
 kubectl create secret generic dingorg-app -n dingorg-prod \
   --from-literal=DATABASE_URL='postgresql://...' \
   --from-literal=DINGTALK_APP_KEY='...' \
   --from-literal=DINGTALK_APP_SECRET='...' \
-  --from-literal=OIDC_CLIENTS_JSON="$CLIENTS"   # pnpm -s oidc:new-client 的输出
+  --from-literal=AUTH_JSON="$AUTH"
 
-# 2. 填 values 后部署。--wait：部署后的快照刷新要打到新版本的 Pod
+# 2. 填 values 后部署
 cp charts/dingorg/values.example.yaml values.prod.yaml
 helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.yaml \
   --wait --timeout 15m
@@ -232,17 +267,16 @@ helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.y
 （`pre-install,pre-upgrade` hook）+ 部署后的 orgsync Job（`post-install,post-upgrade` hook）。
 需要 Kubernetes ≥ 1.26（Job 用了 `podFailurePolicy`）。
 
-- 必填的 values：`image.repository`、`image.tag`、`ingress.host`（`OIDC_ISSUER` 从它派生）。
-- **每次 install / upgrade 后自动刷新一次自有快照**，首次部署不用手动触发。它失败（最常见是出口
-  IP 还没进白名单）会让这次 release 标成失败；修好后重跑：
+- 必填的 values：`image.repository`、`image.tag`、`ingress.host`（`PUBLIC_ORIGIN` 从它派生）。
+- **每次 install / upgrade 后自动刷新一次快照**，首次部署不用手动触发。它失败（最常见是出口
+  IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。
 - ⚠️ **改了 Secret 之后必须 bump `values.secretVersion`**，否则常驻进程手里还是旧值。
-- **`orgsync` 失败要配告警**：它挂了的症状是静默的 —— 离职的人一直能登录。它经集群内 Service
-  调 `POST /api/v1/sync`，失败隔 2 分钟重试、共 3 次。schedule 在 `cronjobs.orgsync.schedule` 改。
-  它报 `401` 不一定是 secret 错了：钉钉 token 端点故障、被限流也是 401（REST 面对谁都不说原因），
-  真实原因在服务端日志的「应用凭证校验失败」里。
+- **`orgsync` 失败要配告警**：它挂了的症状是静默的 —— 离职的人一直能登录。它直连库与钉钉
+  （与 `POST /api/v1/sync` 同一份刷新），失败隔 2 分钟重试、共 3 次，原因在它的日志里，也记进
+  状态端点的 `error`。schedule 在 `cronjobs.orgsync.schedule` 改。
 - `POST /api/v1/sync` 大组织可能要几十秒，Ingress 的 `proxy-read-timeout`（nginx 默认 60 秒）要留够。
-- **本服务的出口 IP 要进每个调用方钉钉应用的白名单**，换出口等于同时打断所有调用方。
+- **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与快照刷新。
 
 ## 常用命令
 
@@ -255,8 +289,9 @@ pnpm test             # vitest；集成测试需要 DATABASE_URL，缺了会静�
 pnpm db:generate      # 改完 schema 生成迁移
 pnpm db:migrate       # 本地迁移（drizzle-kit）
 pnpm migrate          # 本地试跑镜像里的迁移入口
-pnpm orgsync          # 刷新自有应用快照（即每日 cron 的入口）
-pnpm -s oidc:new-client --name <名字> --redirect-uri <回调>   # 生成下游 client（只在本机跑）
+pnpm orgsync          # 刷新自有应用快照（即每日 cron 的入口，直连库与钉钉）
+pnpm -s auth:oidc --name <名字> --redirect-uri <回调> [--merge]   # 生成下游 client（只在本机跑）
+pnpm -s auth:apikey --name <调用方> [--merge]                      # 生成 REST API key（只在本机跑）
 pnpm db:studio
 ```
 

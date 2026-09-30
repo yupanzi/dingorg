@@ -1,10 +1,13 @@
 import { z } from "zod";
 
+import { authEntryNameSchema } from "./audit";
+
 /**
  * 下游 OIDC client 的契约，`~/env`、`~/oidc/provider`、`~/oidc/new-client` 共用。
  *
- * client 是静态配置（env `OIDC_CLIENTS_JSON`），⚠️ 别加回注册端点：REST 面认任意钉钉
- * 应用的凭证，拿它授权等于谁都能注册下游；静态配置把授权交给「谁能改 K8s Secret」。
+ * client 是静态配置（env `AUTH_JSON` 里 `type: "oidc"` 的项），⚠️ 别加回注册端点：本系统没有
+ * 管理员身份能给它授权；静态配置把授权交给「谁能改 K8s Secret」。只管登录，REST 面认的是
+ * `~/domain/api-key`。
  * secret 只能明文：oidc-provider 做明文常量时间比较，还可能拿它当 HS256 密钥。
  *
  * ⚠️ client 凭证与钉钉凭证无关：下游持有钉钉 AppSecret 就能绕过本系统读全组织通讯录。
@@ -34,16 +37,13 @@ const MIN_CLIENT_SECRET_LENGTH = 32;
  */
 const CLIENT_SECRET_CHARSET = /^[A-Za-z0-9._~-]+$/;
 
-/** name 进审计的 `target_name` */
-const MAX_CLIENT_NAME_LENGTH = 64;
-
 function isLoopbackHost(hostname: string): boolean {
 	return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
 /**
- * 回调地址：https（loopback 例外），由 oidc-provider 精确匹配。⚠️ 别加回正则模式：这是
- * 全系统唯一挡开放重定向的地方。上游的其余校验在启动时由 `~/oidc/provider` 跑，这里只管
+ * 精确回调地址：https（loopback 例外），由 oidc-provider 精确匹配；正则的见
+ * `redirectUriRegexSchema`。上游的其余校验在启动时由 `~/oidc/provider` 跑，这里只管
  * 比上游更严的。
  */
 export const redirectUriSchema = z
@@ -72,55 +72,59 @@ export const redirectUriSchema = z
 		});
 	});
 
+/**
+ * 正则回调地址，与 `redirectUris` 分开放：普通 URL 当正则读时 `.` 匹配任意字符，混在一起就
+ * 分不清哪条是宽的。整串匹配（编译成 `^(?:…)$`，漏写锚点或用了 `|` 也不会只匹配一段）；
+ * 单独能编译说明括号配平，包一层撑不破。
+ * ⚠️ 正则是开放重定向最常见的来源：`.` 要转义，别用 `.*` 跨过 host。
+ */
+export const redirectUriRegexSchema = z
+	.string()
+	.min(1)
+	.max(500)
+	.superRefine((raw, ctx) => {
+		try {
+			new RegExp(raw, "u");
+		} catch {
+			ctx.addIssue({ code: "custom", message: "不是合法的正则" });
+		}
+	});
+
+export function compileRedirectUriRegexes(
+	regexes: readonly string[],
+): RegExp[] {
+	return regexes.map((p) => new RegExp(`^(?:${p})$`, "u"));
+}
+
+/**
+ * 正则回调的判定。命中的地址还要过 `redirectUriSchema`：正则写宽了也放不进明文 http 与
+ * fragment；它先跑，还给正则的输入定了长度上限。
+ */
+export function matchesRedirectUriRegex(
+	regexes: readonly RegExp[],
+	value: string,
+): boolean {
+	return (
+		regexes.length > 0 &&
+		redirectUriSchema.safeParse(value).success &&
+		regexes.some((re) => re.test(value))
+	);
+}
+
 /** strict：拼错的键（如 `redirectUri`）直接启动失败，而不是被静默忽略 */
 export const oidcClientSchema = z.strictObject({
-	name: z
-		.string()
-		.trim()
-		.min(1)
-		.max(MAX_CLIENT_NAME_LENGTH)
-		.refine((v) => !/\p{Cc}/u.test(v), "name 不能含控制字符"),
+	type: z.literal("oidc"),
+	name: authEntryNameSchema,
 	id: z.uuid(),
 	secret: z
 		.string()
 		.min(MIN_CLIENT_SECRET_LENGTH)
 		.regex(
 			CLIENT_SECRET_CHARSET,
-			"secret 只能含 A-Z a-z 0-9 - _ . ~（用 pnpm oidc:new-client 生成）",
+			"secret 只能含 A-Z a-z 0-9 - _ . ~（用 pnpm auth:oidc 生成）",
 		),
-	redirectUris: z.array(redirectUriSchema).min(1, "至少要有一个回调地址"),
+	// 只有正则也得留一条精确的：上游不收空的 redirect_uris
+	redirectUris: z.array(redirectUriSchema).min(1, "至少要有一个精确回调地址"),
+	redirectUriRegexes: z.array(redirectUriRegexSchema).optional(),
 });
 export type OidcClient = z.infer<typeof oidcClientSchema>;
-
-/** id 与 name 各自不重复（name 重复审计里就分不清是哪个下游） */
-const oidcClientsSchema = z
-	.array(oidcClientSchema)
-	.min(1, "至少要有一个 client")
-	.superRefine((clients, ctx) => {
-		for (const key of ["id", "name"] as const) {
-			const seen = new Map<string, number>();
-			clients.forEach((c, i) => {
-				const first = seen.get(c[key]);
-				if (first === undefined) seen.set(c[key], i);
-				else
-					ctx.addIssue({
-						code: "custom",
-						path: [i, key],
-						message: `与第 ${first} 个 client 的 ${key} 重复`,
-					});
-			});
-		}
-	});
-
-/** ⚠️ 解析失败只说「不是合法 JSON」：V8 的 SyntaxError 会回显一段原文，里面有 secret */
-export const oidcClientsJsonSchema = z
-	.string()
-	.transform((raw, ctx): unknown => {
-		try {
-			return JSON.parse(raw);
-		} catch {
-			ctx.addIssue({ code: "custom", message: "不是合法的 JSON" });
-			return z.NEVER;
-		}
-	})
-	.pipe(oidcClientsSchema);

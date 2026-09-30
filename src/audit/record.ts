@@ -14,7 +14,7 @@ export interface AuditEntry {
 	status: "success" | "failure";
 
 	actorType: AuditActorType;
-	/** 钉钉 AppKey / unionId / null */
+	/** API key id / unionId / null */
 	actorId?: string | null;
 	actorName?: string | null;
 

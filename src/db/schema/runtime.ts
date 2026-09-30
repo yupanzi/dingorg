@@ -4,7 +4,7 @@ import { createTable } from "./table";
 
 /**
  * 密钥 kv，键名见 `~/resources`。两类住户：OIDC 的 JWKS 与 cookie keys（⚠️ 不可重建，
- * 丢了全员掉登录）；各 appKey 的钉钉 token 缓存（随时可重取）。
+ * 丢了全员掉登录）；自有应用的钉钉 token 缓存（随时可重取）。
  */
 export const appSecrets = createTable("app_secrets", {
 	key: text("key").primaryKey(),

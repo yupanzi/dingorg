@@ -1,112 +1,95 @@
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
-
-import type { OrgApiErrorBody, OrgApiSyncResponse } from "~/domain/org-api";
-import { REFRESH_COOLDOWN_MS } from "~/domain/sync";
-import { loadOrgSyncEnv, type OrgSyncEnv } from "~/env";
+import { recordAudit } from "~/audit/record";
+import { createDb } from "~/db";
+import { closeDeps } from "~/deps";
+import {
+	REFRESH_COOLDOWN_MS,
+	SYNC_TRIGGER_SUMMARY,
+	syncTriggerSummary,
+} from "~/domain/sync";
+import { loadOrgSyncEnv, ownDingtalkApp } from "~/env";
 import { logger } from "~/log";
+import { AUDIT_ACTIONS } from "~/resources";
+import {
+	type RefreshResult,
+	refreshSnapshot,
+	type SnapshotDeps,
+} from "~/sync/snapshot";
 
 /**
- * 每日刷新自有应用的快照：拿自有凭证调 `POST /api/v1/sync`，与手动触发同一条路。
- * 刷新逻辑只在服务里有一份，这里不碰数据库、不碰钉钉。挂了是静默的（离职的人一直
- * 能登录），Job 失败要配告警。
+ * 每日刷新自有应用的快照：直接调 `refreshSnapshot`，与 `POST /api/v1/sync` 同一份实现（冷却、
+ * 失败记录都在里面；与常驻进程并发时靠冷却与 `fetched_at` 条件写，最坏白拉一次）。不经 HTTP，
+ * 所以不要凭证：能拿着这个 Secret 起 Pod 就是它的授权。挂了是静默的（离职的人一直能登录），
+ * Job 失败要配告警。
  */
 
-/**
- * 服务端同步拉完才发响应头。⚠️ 不用 fetch：undici 的 headers 超时固定 300 秒，拉取超过它时
- * 客户端先放弃而服务端照样刷完 —— Job 报失败、审计缺一条、重试再拉一整轮。
- */
-const REQUEST_TIMEOUT_MS = 10 * 60_000;
-
-// ⚠️ 必须长于服务端冷却，否则重试撞在冷却期里白跑
+// ⚠️ 必须长于冷却，否则重试撞在冷却期里白跑
 const RETRY_DELAY_MS = 2 * REFRESH_COOLDOWN_MS;
 const MAX_ATTEMPTS = 3;
 
-function post(
-	url: URL,
-	headers: Record<string, string>,
-): Promise<{ status: number; text: string }> {
-	const send = url.protocol === "https:" ? httpsRequest : httpRequest;
-	return new Promise((resolve, reject) => {
-		const req = send(
-			url,
-			{
-				method: "POST",
-				headers,
-				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-			},
-			(res) => {
-				let text = "";
-				res.setEncoding("utf8");
-				res.on("data", (chunk: string) => {
-					text += chunk;
-				});
-				res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
-				res.on("error", reject);
-			},
-		);
-		req.on("error", reject);
-		req.end();
-	});
-}
+/** 审计与 REST 面同一套说法：刷新抛错才算 failure */
+async function refreshAndAudit(deps: SnapshotDeps): Promise<RefreshResult> {
+	const audit = (status: "success" | "failure", summary: string) =>
+		recordAudit(deps.db, {
+			action: AUDIT_ACTIONS.syncTrigger,
+			status,
+			actorType: "system",
+			targetId: deps.dingtalk.clientId,
+			details: { summary },
+		});
 
-async function trigger(env: OrgSyncEnv): Promise<OrgApiSyncResponse> {
-	const credential = Buffer.from(
-		`${env.DINGTALK_APP_KEY}:${env.DINGTALK_APP_SECRET}`,
-	).toString("base64");
-	const res = await post(new URL("/api/v1/sync", env.DINGORG_URL), {
-		authorization: `Basic ${credential}`,
-		"content-length": "0",
-	});
-
-	let body: unknown = null;
 	try {
-		body = JSON.parse(res.text);
-	} catch {}
-	if (res.status < 200 || res.status >= 300) {
-		const e = (body as OrgApiErrorBody | null)?.error;
-		throw new Error(
-			`HTTP ${res.status} ${e?.code ?? ""} ${e?.message ?? ""}`.trim(),
-		);
+		const result = await refreshSnapshot(deps);
+		await audit("success", syncTriggerSummary(result.refreshed));
+		return result;
+	} catch (err) {
+		await audit("failure", SYNC_TRIGGER_SUMMARY.failed);
+		throw err;
 	}
-
-	const status = body as OrgApiSyncResponse;
-	// 200 不等于成功：冷却期内服务原样返回现有状态
-	if (status.state !== "ok") {
-		throw new Error(`state=${status.state}：${status.error ?? "未知"}`);
-	}
-	return status;
 }
 
 async function main(): Promise<void> {
 	const env = loadOrgSyncEnv();
+	const deps: SnapshotDeps = {
+		db: createDb(env.DATABASE_URL, { maxConnections: 2 }),
+		dingtalk: ownDingtalkApp(env),
+		log: logger,
+	};
+	const appKey = env.DINGTALK_APP_KEY;
 
-	for (let attempt = 1; ; attempt++) {
-		try {
-			const { refreshed, fetchedAt, userCount, deptCount } = await trigger(env);
-			logger.info(
-				{
-					appKey: env.DINGTALK_APP_KEY,
-					attempt,
-					fetchedAt,
-					userCount,
-					deptCount,
-				},
-				refreshed ? "自有应用组织快照已刷新" : "冷却期内未外呼，快照刚被刷新过",
-			);
-			return;
-		} catch (err) {
-			if (attempt >= MAX_ATTEMPTS) {
-				throw new Error(`共尝试 ${MAX_ATTEMPTS} 次仍失败，快照保持上一份`, {
-					cause: err,
-				});
+	try {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				const { row, refreshed } = await refreshAndAudit(deps);
+				// 冷却期内返回的是现有快照：它挂着的失败就是这一轮的失败
+				if (row.error) throw new Error(`上一次刷新刚失败：${row.error}`);
+				logger.info(
+					{
+						appKey,
+						attempt,
+						fetchedAt: row.fetchedAt,
+						userCount: row.userCount,
+						deptCount: row.deptCount,
+					},
+					refreshed
+						? "自有应用组织快照已刷新"
+						: "冷却期内未外呼，快照刚被刷新过",
+				);
+				return;
+			} catch (err) {
+				if (attempt >= MAX_ATTEMPTS) {
+					throw new Error(`共尝试 ${MAX_ATTEMPTS} 次仍失败，快照保持上一份`, {
+						cause: err,
+					});
+				}
+				logger.warn(
+					{ appKey, attempt, err },
+					"自有应用组织快照刷新失败，稍后重试",
+				);
+				await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
 			}
-			logger.warn(
-				{ appKey: env.DINGTALK_APP_KEY, attempt, err },
-				"自有应用组织快照刷新失败，稍后重试",
-			);
-			await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
 		}
+	} finally {
+		await closeDeps(deps);
 	}
 }
 

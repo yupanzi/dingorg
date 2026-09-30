@@ -1,13 +1,19 @@
 import type { EventEmitter } from "node:events";
 import { inspect } from "node:util";
 
-import { eq, inArray, like } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-
+import { newApiKey } from "~/auth/new-api-key";
 import { appSecrets, auditLogs, orgSnapshots } from "~/db/schema";
-import type { DingtalkCredentials } from "~/dingtalk/client";
+import { invalidateAccessToken } from "~/dingtalk/access-token";
+import {
+	type DingtalkCredentials,
+	DingtalkError,
+	fetchAccessToken,
+} from "~/dingtalk/client";
 import { fetchOrg } from "~/dingtalk/fetch-org";
+import { apiKeyEntryId } from "~/domain/api-key";
 import { CLIENT_SCOPE } from "~/domain/oidc-client";
 import { type IdpEnv, parseEnv } from "~/env";
 import { createOidcProvider } from "~/oidc/provider";
@@ -18,16 +24,17 @@ import { closeDeps, createDeps, type Deps } from "./deps";
 import { idpEnvSchema } from "./env";
 
 /**
- * 路由契约：OIDC 挂载不吞路由、静态 client、REST 面鉴权与隔离。
+ * 路由契约：OIDC 挂载不吞路由、静态 client、REST 面鉴权与错误翻译。
  *
- * mock 两个钉钉出口：`fetchAccessToken` 只认 secret `good`；`fetchOrg` 按 token 返回可区分
- * 的组织，两个专用 appKey 让它抛错。⚠️ 别往 buildApp 里加启动即外呼的逻辑：这里会拿假凭证
- * 去真打钉钉。
+ * mock 两个钉钉出口，成败由 `tokenError` / `orgFailure` 控制；`fetchOrg` 按 token 返回
+ * 可区分的组织。⚠️ 别往 buildApp 里加启动即外呼的逻辑：这里会拿假凭证去真打钉钉。
  */
+let tokenError: Error | null = null;
+let orgFailure: "ip-blocked" | "internal" | null = null;
 vi.mock("~/dingtalk/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("~/dingtalk/client")>()),
 	fetchAccessToken: vi.fn(async (cred: DingtalkCredentials) => {
-		if (cred.clientSecret !== "good") throw new Error("钉钉拒绝了这对凭证");
+		if (tokenError) throw tokenError;
 		return {
 			accessToken: `tok-${cred.clientId}`,
 			expiresAt: Math.floor(Date.now() / 1000) + 7200,
@@ -38,10 +45,10 @@ vi.mock("~/dingtalk/fetch-org", async () => {
 	const { DingtalkError } = await import("~/dingtalk/client");
 	return {
 		fetchOrg: vi.fn(async (token: string) => {
-			if (token === "tok-itest-rest-ip-blocked") {
+			if (orgFailure === "ip-blocked") {
 				throw new DingtalkError("ip 不在白名单", { errcode: 60020 });
 			}
-			if (token === "tok-itest-rest-internal") {
+			if (orgFailure === "internal") {
 				throw new Error('relation "secret_table" does not exist');
 			}
 			return {
@@ -66,6 +73,12 @@ vi.mock("~/dingtalk/fetch-org", async () => {
 	};
 });
 
+function generateKey(name: string) {
+	const r = newApiKey(name);
+	if (!r.success) throw new Error("生成 API key 失败");
+	return { key: r.data.key, id: apiKeyEntryId(r.data), entry: r.data };
+}
+
 const url = process.env.DATABASE_URL;
 const maybe = url ? describe : describe.skip;
 
@@ -74,32 +87,43 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 	let deps: Deps;
 	let app: FastifyInstance;
 
-	// HOST 必须与 OIDC_ISSUER 同源：discovery 的端点 URL 由请求 Host 头派生
+	// HOST 必须与 PUBLIC_ORIGIN 一致：discovery 的端点 URL 由请求 Host 头派生
 	const HOST = "localhost:13001";
 	const ISSUER = `http://${HOST}/oidc`;
 	const DINGTALK_APP_KEY = "itest-appkey";
 	const CLIENT_A = {
+		type: "oidc",
 		name: "itest-authentik-prod",
 		id: "6f1c2a0e-9b7d-4c1e-8f3a-2d5e7b9c0a14",
 		secret: "itest-client-a-secret-0123456789abcdef",
 		redirectUris: ["https://sso.example.com/source/oauth/callback/dingorg/"],
 	} as const;
 	const CLIENT_B = {
+		type: "oidc",
 		name: "itest-authentik-staging",
 		id: "0d8682fc-11a1-4324-bdd0-edc189c26d7d",
 		secret: "itest-client-b-secret-0123456789abcdef",
 		redirectUris: [
 			"https://sso-stg.example.com/source/oauth/callback/dingorg/",
 		],
+		redirectUriRegexes: ["https://pr-\\d+\\.preview\\.example\\.com/callback"],
 	} as const;
+	// REST 面的调用方：与 client 无关的两把 API key
+	const KEY_HR = generateKey("itest-hr-system");
+	const KEY_BI = generateKey("itest-bi");
 
 	beforeAll(async () => {
 		env = parseEnv(idpEnvSchema, {
 			DATABASE_URL: url,
 			DINGTALK_APP_KEY,
 			DINGTALK_APP_SECRET: "x",
-			OIDC_ISSUER: ISSUER,
-			OIDC_CLIENTS_JSON: JSON.stringify([CLIENT_A, CLIENT_B]),
+			PUBLIC_ORIGIN: `http://${HOST}`,
+			AUTH_JSON: JSON.stringify([
+				CLIENT_A,
+				CLIENT_B,
+				KEY_HR.entry,
+				KEY_BI.entry,
+			]),
 		});
 		deps = createDeps(env);
 		app = await buildApp(deps, env);
@@ -151,7 +175,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		expect(doc.claims_supported).not.toContain("roles");
 	});
 
-	describe("静态 client（OIDC_CLIENTS_JSON）", () => {
+	describe("静态 client（AUTH_JSON 的 oidc 项）", () => {
 		// RFC 7636 的示例 challenge（强制 PKCE）
 		const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 		const [REDIRECT_A] = CLIENT_A.redirectUris;
@@ -223,7 +247,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			}
 		});
 
-		it("回调地址只有精确匹配 —— 未登记的地址拿不到授权码", async () => {
+		it("未登记、也没命中正则的地址拿不到授权码", async () => {
 			const res = await authorize({
 				client_id: CLIENT_A.id,
 				redirect_uri: "https://evil.example.com/cb",
@@ -241,6 +265,28 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			expect(res.body).toContain("redirect_uri");
 		});
 
+		// 覆写的是 `Client.prototype.redirectUriAllowed`：上游改了判定入口这条先红
+		it("正则回调：整串命中才放行，且只对登记它的 client 有效", async () => {
+			const PREVIEW = "https://pr-42.preview.example.com/callback";
+			const ok = await authorize({
+				client_id: CLIENT_B.id,
+				redirect_uri: PREVIEW,
+			});
+			expect(ok.statusCode).toBe(303);
+			expect(ok.headers.location).toContain("/oidc/interaction/");
+
+			for (const [client_id, redirect_uri] of [
+				[CLIENT_B.id, "https://pr-42.preview.example.com.evil.io/callback"],
+				[CLIENT_B.id, `${PREVIEW}/../../evil`],
+				[CLIENT_B.id, PREVIEW.replace("https:", "http:")],
+				[CLIENT_A.id, PREVIEW],
+			] as const) {
+				const res = await authorize({ client_id, redirect_uri });
+				expect(res.statusCode).toBe(400);
+				expect(res.body).toContain("redirect_uri");
+			}
+		});
+
 		it("token 端点：只认本 client 的 secret", async () => {
 			const res = await exchange({
 				clientId: CLIENT_A.id,
@@ -254,7 +300,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		it("启动时就过 oidc-provider 自己的 client 校验", async () => {
 			const bad: IdpEnv = {
 				...env,
-				OIDC_CLIENTS_JSON: [
+				AUTH_JSON: [
 					{ ...CLIENT_A, redirectUris: ["https://sso.example.com/cb#frag"] },
 				],
 			};
@@ -351,30 +397,48 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		expect(res.statusCode).toBe(404);
 	});
 
-	describe("REST 面（凭证透传 + 按 appKey 隔离）", () => {
-		const APP_A = "itest-rest-app-a";
-		const APP_B = "itest-rest-app-b";
-		// 只用于「钉钉拒绝」：它的限流冷却不能波及别的用例
-		const APP_REJECTED = "itest-rest-rejected";
-		const REJECTED_SECRET = "itest-rest-wrong-secret";
-		// 鉴权能过、拉取时钉钉报错 / 内部出错
-		const APP_IP_BLOCKED = "itest-rest-ip-blocked";
-		const APP_INTERNAL = "itest-rest-internal";
+	describe("REST 面（API key + 自有快照）", () => {
+		const basic = (id: string, secret: string) =>
+			`Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`;
+		const bearer = (key: string) => `Bearer ${key}`;
+		const AS_REST = bearer(KEY_HR.key);
+		// id 对、secret 错：末位换一个字符
+		const WRONG_KEY = `${KEY_HR.key.slice(0, -1)}${KEY_HR.key.endsWith("A") ? "B" : "A"}`;
 
-		const basic = (appKey: string, secret: string) =>
-			`Basic ${Buffer.from(`${appKey}:${secret}`).toString("base64")}`;
-
-		// 审计行按 UA 清理：没带凭证的请求 actor_id 为空，按 appKey 清不掉
+		// 审计行按 UA 清理：没带凭证的请求 actor_id 为空，按 key 清不掉
 		const UA = "itest-rest";
 
-		async function cleanup() {
-			const keys = [APP_A, APP_B, APP_REJECTED, APP_IP_BLOCKED, APP_INTERNAL];
+		const call = (
+			method: "GET" | "POST",
+			url: string,
+			authorization?: string,
+		) =>
+			app.inject({
+				method,
+				url,
+				headers: {
+					host: HOST,
+					"user-agent": UA,
+					...(authorization ? { authorization } : {}),
+				},
+			});
+
+		// 回到「从没拉过」：删自有快照（冷却跟着清掉）与 token 的两级缓存
+		async function resetOwnSnapshot() {
+			tokenError = null;
+			orgFailure = null;
 			await deps.db
 				.delete(orgSnapshots)
-				.where(inArray(orgSnapshots.appKey, keys));
+				.where(eq(orgSnapshots.appKey, DINGTALK_APP_KEY));
 			await deps.db
 				.delete(appSecrets)
-				.where(like(appSecrets.key, `${accessTokenKey("itest-rest-")}%`));
+				.where(eq(appSecrets.key, accessTokenKey(DINGTALK_APP_KEY)));
+			// 不匹配的 badToken：条件删除不命中，只清进程内
+			await invalidateAccessToken(deps.db, DINGTALK_APP_KEY, "itest-clear");
+		}
+
+		async function cleanup() {
+			await resetOwnSnapshot();
 			await deps.db.delete(auditLogs).where(eq(auditLogs.userAgent, UA));
 		}
 
@@ -383,79 +447,61 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 
 		it.each([
 			["没带凭证", undefined],
-			["不是 Basic", "Bearer whatever"],
-			["钉钉拒绝的凭证", basic(APP_REJECTED, REJECTED_SECRET)],
-		])("%s → 同一个不说原因的 401", async (_, authorization) => {
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/v1/org/users",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					...(authorization ? { authorization } : {}),
-				},
-			});
+			["key 错（id 对）", bearer(WRONG_KEY)],
+			["未知 id", bearer(KEY_HR.key.replace(KEY_HR.id, "00000000"))],
+			["key 放在 Basic 里", basic(KEY_HR.id, KEY_HR.key)],
+			["OIDC client 凭证", basic(CLIENT_A.id, CLIENT_A.secret)],
+			["钉钉 AppKey/Secret", basic(DINGTALK_APP_KEY, "x")],
+		])("%s → 同一个不说原因的 401，且不外呼", async (_, authorization) => {
+			const calls = vi.mocked(fetchAccessToken).mock.calls.length;
+			const res = await call("GET", "/api/v1/org/users", authorization);
 
 			expect(res.statusCode).toBe(401);
 			expect(res.json()).toEqual({
 				error: { code: "unauthorized", message: "无效的凭证" },
 			});
-			expect(res.headers["www-authenticate"]).toContain("Basic");
+			expect(res.headers["www-authenticate"]).toContain("Bearer");
+			expect(vi.mocked(fetchAccessToken).mock.calls.length).toBe(calls);
 		});
 
-		it("鉴权失败也进审计：记来件声称的 appKey，secret 一个字节都不进", async () => {
-			await app.inject({
-				method: "GET",
-				url: "/api/v1/org/departments",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					authorization: basic(APP_REJECTED, REJECTED_SECRET),
-				},
+		it("鉴权失败也进审计：记来件声称的 key id，key 一个字节都不进", async () => {
+			await call("GET", "/api/v1/org/departments", bearer(WRONG_KEY));
+
+			const rows = await vi.waitFor(async () => {
+				const rows = await deps.db
+					.select()
+					.from(auditLogs)
+					.where(
+						and(eq(auditLogs.actorId, KEY_HR.id), eq(auditLogs.userAgent, UA)),
+					);
+				expect(rows.length).toBeGreaterThan(0);
+				return rows;
 			});
-
-			const rows = await deps.db
-				.select()
-				.from(auditLogs)
-				.where(inArray(auditLogs.actorId, [APP_REJECTED]));
-
-			expect(rows.length).toBeGreaterThan(0);
-			expect(rows.every((r) => r.status === "failure")).toBe(true);
-			expect(JSON.stringify(rows)).not.toContain(REJECTED_SECRET);
+			expect(
+				rows.every((r) => r.status === "failure" && r.actorType === "api_key"),
+			).toBe(true);
+			expect(JSON.stringify(rows)).not.toContain(WRONG_KEY.slice(13));
 		});
 
-		it("超长 appKey → 401，审计照样记一条（actor 为空）", async () => {
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/v1/sync",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					authorization: basic("k".repeat(300), "whatever"),
-				},
-			});
+		it("格式不对的 Bearer → 401，审计照样记一条（actor 为空）", async () => {
+			const res = await call("GET", "/api/v1/sync", bearer("k".repeat(300)));
 			expect(res.statusCode).toBe(401);
 
-			const rows = await deps.db
-				.select()
-				.from(auditLogs)
-				.where(eq(auditLogs.userAgent, UA));
-			expect(
-				rows.filter((r) => r.action === AUDIT_ACTIONS.syncStatus),
-			).toMatchObject([{ status: "failure", actorId: null }]);
+			await vi.waitFor(async () => {
+				const rows = await deps.db
+					.select()
+					.from(auditLogs)
+					.where(eq(auditLogs.userAgent, UA));
+				expect(
+					rows.filter((r) => r.action === AUDIT_ACTIONS.syncStatus),
+				).toMatchObject([{ status: "failure", actorId: null }]);
+			});
 		});
 
-		it("两个应用各读到自己那份快照，响应带 fetchedAt", async () => {
-			for (const appKey of [APP_A, APP_B]) {
-				const res = await app.inject({
-					method: "GET",
-					url: "/api/v1/org/users",
-					headers: {
-						host: HOST,
-						"user-agent": UA,
-						authorization: basic(appKey, "good"),
-					},
-				});
+		it("每把 key 都读到自有快照，响应带 fetchedAt，审计记 key 的 id 与 name", async () => {
+			await resetOwnSnapshot();
+			for (const { key } of [KEY_HR, KEY_BI]) {
+				const res = await call("GET", "/api/v1/org/users", bearer(key));
 
 				expect(res.statusCode).toBe(200);
 				const body = res.json() as {
@@ -463,41 +509,58 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 					fetchedAt: string;
 				};
 				expect(body.users.map((u) => u.dingtalk.unionid)).toEqual([
-					`union-tok-${appKey}`,
+					`union-tok-${DINGTALK_APP_KEY}`,
 				]);
 				expect(Number.isNaN(Date.parse(body.fetchedAt))).toBe(false);
 			}
+			expect(vi.mocked(fetchOrg)).toHaveBeenLastCalledWith(
+				`tok-${DINGTALK_APP_KEY}`,
+			);
+
+			// 审计在 onResponse 里写，响应到手时未必已落库
+			await vi.waitFor(async () => {
+				const rows = await deps.db
+					.select()
+					.from(auditLogs)
+					.where(eq(auditLogs.actorId, KEY_HR.id));
+				expect(rows).toContainEqual(
+					expect.objectContaining({
+						action: AUDIT_ACTIONS.orgListUsers,
+						status: "success",
+						actorType: "api_key",
+						actorName: KEY_HR.entry.name,
+					}),
+				);
+			});
+		});
+
+		it("GET /api/v1/sync 报自有快照的状态，不暴露钉钉 AppKey", async () => {
+			const res = await call("GET", "/api/v1/sync", AS_REST);
+
+			expect(res.statusCode).toBe(200);
+			expect(res.json()).toMatchObject({ state: "ok", userCount: 1 });
+			expect(res.json()).not.toHaveProperty("appKey");
+			expect(res.body).not.toContain(DINGTALK_APP_KEY);
 		});
 
 		// 下面两条是 guard 错误翻译仅有的哨兵
-		it("钉钉报错 → 502 且带 errcode", async () => {
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/v1/org/users",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					authorization: basic(APP_IP_BLOCKED, "good"),
-				},
-			});
+		it("钉钉报错 → 502 且带 errcode；状态端点讲原因", async () => {
+			await resetOwnSnapshot();
+			orgFailure = "ip-blocked";
+			const res = await call("GET", "/api/v1/org/users", AS_REST);
 
 			expect(res.statusCode).toBe(502);
 			expect(res.json()).toMatchObject({
 				error: { code: "dingtalk_error", dingtalk: { errcode: 60020 } },
 			});
+			expect((await call("GET", "/api/v1/sync", AS_REST)).json()).toMatchObject(
+				{ state: "never", error: "ip 不在白名单（60020）" },
+			);
 		});
 
 		it("刚失败过、又从没成功过 → 503 + Retry-After，带上次的原因，不再外呼", async () => {
 			const calls = vi.mocked(fetchOrg).mock.calls.length;
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/v1/org/users",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					authorization: basic(APP_IP_BLOCKED, "good"),
-				},
-			});
+			const res = await call("GET", "/api/v1/org/users", AS_REST);
 
 			expect(res.statusCode).toBe(503);
 			expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
@@ -508,16 +571,25 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			expect(vi.mocked(fetchOrg).mock.calls.length).toBe(calls);
 		});
 
-		it("非钉钉的错 → 500 不回显 message，失败照样进审计", async () => {
-			const res = await app.inject({
-				method: "POST",
-				url: "/api/v1/sync",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					authorization: basic(APP_INTERNAL, "good"),
-				},
+		// 自有凭证在服务端：它的 token 失败是服务端的故障，不是调用方的 401
+		it("钉钉 token 申请失败 → 502 而不是 401，原因进状态端点", async () => {
+			await resetOwnSnapshot();
+			tokenError = new DingtalkError("应用凭证无效", { errcode: 40089 });
+			const res = await call("POST", "/api/v1/sync", AS_REST);
+
+			expect(res.statusCode).toBe(502);
+			expect(res.json()).toMatchObject({
+				error: { code: "dingtalk_error", dingtalk: { errcode: 40089 } },
 			});
+			expect((await call("GET", "/api/v1/sync", AS_REST)).json()).toMatchObject(
+				{ state: "never", error: "应用凭证无效（40089）" },
+			);
+		});
+
+		it("非钉钉的错 → 500 不回显 message，失败照样进审计；状态端点也不回显", async () => {
+			await resetOwnSnapshot();
+			orgFailure = "internal";
+			const res = await call("POST", "/api/v1/sync", AS_REST);
 
 			expect(res.statusCode).toBe(500);
 			expect(res.json()).toEqual({
@@ -525,60 +597,31 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			});
 			expect(res.body).not.toContain("secret_table");
 
-			// 审计在 onResponse 里写，响应到手时未必已落库
 			await vi.waitFor(async () => {
 				const rows = await deps.db
 					.select()
 					.from(auditLogs)
-					.where(eq(auditLogs.actorId, APP_INTERNAL));
-				expect(rows).toMatchObject([
-					{ status: "failure", details: { summary: "刷新组织快照失败" } },
-				]);
+					.where(
+						and(
+							eq(auditLogs.actorId, KEY_HR.id),
+							eq(auditLogs.action, AUDIT_ACTIONS.syncTrigger),
+						),
+					);
+				expect(rows).toContainEqual(
+					expect.objectContaining({
+						status: "failure",
+						targetId: DINGTALK_APP_KEY,
+						details: { summary: "刷新组织快照失败" },
+					}),
+				);
 			});
-		});
 
-		// 状态端点读的是 org_snapshots.error，一个容易被忘掉的出口
-		it("状态端点：钉钉的错讲原因，内部错误不回显原文", async () => {
-			const status = async (appKey: string) =>
-				app.inject({
-					method: "GET",
-					url: "/api/v1/sync",
-					headers: {
-						host: HOST,
-						"user-agent": UA,
-						authorization: basic(appKey, "good"),
-					},
-				});
-
-			const internal = await status(APP_INTERNAL);
-			expect(internal.json()).toMatchObject({
+			const status = await call("GET", "/api/v1/sync", AS_REST);
+			expect(status.json()).toMatchObject({
 				state: "never",
 				error: "内部错误",
 			});
-			expect(internal.body).not.toContain("secret_table");
-
-			expect((await status(APP_IP_BLOCKED)).json()).toMatchObject({
-				error: "ip 不在白名单（60020）",
-			});
-		});
-
-		it("GET /api/v1/sync 只报调用方自己那份的状态", async () => {
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/v1/sync",
-				headers: {
-					host: HOST,
-					"user-agent": UA,
-					authorization: basic(APP_B, "good"),
-				},
-			});
-
-			expect(res.statusCode).toBe(200);
-			expect(res.json()).toMatchObject({
-				appKey: APP_B,
-				state: "ok",
-				userCount: 1,
-			});
+			expect(status.body).not.toContain("secret_table");
 		});
 	});
 });

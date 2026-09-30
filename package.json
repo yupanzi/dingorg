@@ -1,7 +1,7 @@
 {
 	"name": "dingorg",
 	"version": "1.0.0",
-	"description": "钉钉 → 标准 OIDC 桥接，及按钉钉应用隔离的组织架构快照",
+	"description": "钉钉 → 标准 OIDC 桥接，及组织架构快照 REST 出口",
 	"license": "MIT",
 	"type": "module",
 	"private": true,
@@ -22,7 +22,8 @@
 		"db:studio": "drizzle-kit studio",
 		"migrate": "tsx --env-file-if-exists=.env src/bin/migrate.ts",
 		"orgsync": "tsx --env-file-if-exists=.env src/bin/cron/orgsync.ts",
-		"oidc:new-client": "tsx src/bin/new-oidc-client.ts"
+		"auth:oidc": "tsx src/bin/auth.ts oidc",
+		"auth:apikey": "tsx src/bin/auth.ts apikey"
 	},
 	"dependencies": {
 		"@fastify/middie": "^9.3.3",

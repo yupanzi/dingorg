@@ -1,5 +1,5 @@
 /**
- * 对外组织 API 的响应契约，也是 `org_snapshots.data` 的形状。orgsync 与服务端共用。
+ * 对外组织 API 的响应契约，也是 `org_snapshots.data` 的形状。
  * 字段名借 SCIM 的词汇（OIDC 标准 claim 里没有雇佣关系属性）。
  */
 
@@ -70,7 +70,6 @@ export interface OrgApiDeptsResponse extends SnapshotStamp {
 
 /** `state` 是派生值，见 `~/api/sync` 的 `toStatus` */
 export interface OrgApiSyncStatus {
-	appKey: string;
 	state: "never" | "failed" | "ok";
 	fetchedAt: string | null;
 	attemptedAt: string | null;

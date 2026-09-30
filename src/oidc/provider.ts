@@ -3,17 +3,21 @@ import type { IncomingMessage } from "node:http";
 import Provider from "oidc-provider";
 
 import type { Deps } from "../deps";
+import { pickAuthEntries } from "../domain/config-json";
 import {
 	CLIENT_GRANT_TYPES,
 	CLIENT_RESPONSE_TYPES,
 	CLIENT_SCOPE,
 	CLIENT_TOKEN_AUTH_METHOD,
+	compileRedirectUriRegexes,
+	matchesRedirectUriRegex,
 } from "../domain/oidc-client";
-import type { IdpEnv } from "../env";
+import { type IdpEnv, trustsProxyHeaders } from "../env";
 import { type Log, logger } from "../log";
 import { makeFindAccount } from "./account";
 import { createAdapterFactory } from "./adapter";
 import { ensureOidcKeys } from "./keys";
+import { oidcIssuer } from "./mount";
 
 const DAY = 24 * 60 * 60;
 
@@ -22,8 +26,9 @@ export async function createOidcProvider(
 	env: IdpEnv,
 ): Promise<Provider> {
 	const keys = await ensureOidcKeys(deps.db);
+	const clients = pickAuthEntries(env.AUTH_JSON, "oidc");
 
-	const provider = new Provider(env.OIDC_ISSUER, {
+	const provider = new Provider(oidcIssuer(env), {
 		adapter: createAdapterFactory(deps.db),
 		findAccount: makeFindAccount(deps.db, env.DINGTALK_APP_KEY),
 		// jose 的 JWK 与 oidc-provider 的声明结构等价
@@ -31,7 +36,7 @@ export async function createOidcProvider(
 		cookies: { keys: keys.cookieKeys },
 
 		// 静态 client：`Client.find` 先查它，adapter 的 Client 分支恒返回 undefined
-		clients: env.OIDC_CLIENTS_JSON.map((c) => ({
+		clients: clients.map((c) => ({
 			client_id: c.id,
 			client_secret: c.secret,
 			redirect_uris: c.redirectUris,
@@ -75,8 +80,8 @@ export async function createOidcProvider(
 		},
 	});
 
-	// 反代之后要信任 `x-forwarded-proto`，否则 https issuer 校验失败
-	provider.proxy = env.AUTH_TRUST_PROXY_HEADERS;
+	// 反代之后要信任 `x-forwarded-proto`，判据见 `trustsProxyHeaders`
+	provider.proxy = trustsProxyHeaders(env);
 
 	// middie 把 `req.log`（带 reqId）挂在了原始请求上
 	const logFor = (ctx?: { req?: IncomingMessage }) =>
@@ -100,11 +105,25 @@ export async function createOidcProvider(
 		},
 	);
 
+	// 正则回调：上游只做精确匹配、没有配置项，只能覆写原型（`provider.Client` 是本实例独有的
+	// 子类）。授权端点、PAR 与报错重定向都经它判定；token 端点另比「与授权时是同一个地址」
+	const regexes = new Map(
+		clients.map((c) => [
+			c.id,
+			compileRedirectUriRegexes(c.redirectUriRegexes ?? []),
+		]),
+	);
+	const exactAllowed = provider.Client.prototype.redirectUriAllowed;
+	provider.Client.prototype.redirectUriAllowed = function (value) {
+		return (
+			exactAllowed.call(this, value) ||
+			matchesRedirectUriRegex(regexes.get(this.clientId) ?? [], value)
+		);
+	};
+
 	// ⚠️ 静态 client 要到第一次 `Client.find` 才过上游的 metadata 校验：启动时逐个 find，
 	// 配错就是启动失败，而不是那个下游所有人登录失败
-	await Promise.all(
-		env.OIDC_CLIENTS_JSON.map((c) => provider.Client.find(c.id)),
-	);
+	await Promise.all(clients.map((c) => provider.Client.find(c.id)));
 
 	return provider;
 }

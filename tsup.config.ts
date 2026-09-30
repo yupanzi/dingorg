@@ -2,7 +2,7 @@ import { defineConfig } from "tsup";
 
 /**
  * 三方依赖保持 external（oidc-provider 带内部资源文件，bundle 进来会炸）。
- * ⚠️ 别加 `bin/new-oidc-client.ts`：它只在本机跑，进镜像的话 secret 会随 stdout 进日志。
+ * ⚠️ 别加 `bin/auth.ts`：它只在本机跑，进镜像的话 client secret 与 API key 会随输出进日志。
  */
 export default defineConfig({
 	entry: [

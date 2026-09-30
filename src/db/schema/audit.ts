@@ -38,7 +38,7 @@ export const auditLogs = createTable(
 
 		// actor / target 都是快照、不建外键：人离职后也要查得到，所以写入时就得拿对
 		actorType: auditActorType("actor_type").notNull().default("system"),
-		/** AppKey / unionId / null */
+		/** API key id / unionId / null，见 `AUDIT_ACTOR_TYPES` */
 		actorId: varchar("actor_id", { length: MAX_ACTOR_ID_LENGTH }),
 		actorName: varchar("actor_name", { length: 255 }),
 

@@ -1,11 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type Provider from "oidc-provider";
 import { type AuditEntry, recordAudit } from "~/audit/record";
+import { pickAuthEntries } from "~/domain/config-json";
 import { AUDIT_ACTIONS } from "~/resources";
 import { findMember } from "~/sync/snapshot";
 import type { Deps } from "../deps";
 import { getContactUser, getUserAccessToken } from "../dingtalk/client";
-import type { IdpEnv } from "../env";
+import { type IdpEnv, ownDingtalkApp } from "../env";
+import { oidcIssuer } from "../oidc/mount";
 import { buildDingtalkAuthUrl } from "./dingtalk";
 import {
 	type ErrorPage,
@@ -36,7 +38,9 @@ export function registerInteractionRoutes(
 	provider: Provider,
 ): void {
 	// 审计记 client 的 name：UUID 人看不出是哪个下游
-	const clientNames = new Map(env.OIDC_CLIENTS_JSON.map((c) => [c.id, c.name]));
+	const clientNames = new Map(
+		pickAuthEntries(env.AUTH_JSON, "oidc").map((c) => [c.id, c.name]),
+	);
 
 	app.get(
 		"/oidc/interaction/:uid",
@@ -48,7 +52,7 @@ export function registerInteractionRoutes(
 				return sendSessionInvalid(reply);
 			}
 
-			const redirectUri = `${env.OIDC_ISSUER}/interaction/${details.uid}/callback`;
+			const redirectUri = `${oidcIssuer(env)}/interaction/${details.uid}/callback`;
 			const url = buildDingtalkAuthUrl({
 				clientId: env.DINGTALK_APP_KEY,
 				redirectUri,
@@ -141,10 +145,7 @@ export function registerInteractionRoutes(
 			let unionId: string;
 			try {
 				const userToken = await getUserAccessToken(
-					{
-						clientId: env.DINGTALK_APP_KEY,
-						clientSecret: env.DINGTALK_APP_SECRET,
-					},
+					ownDingtalkApp(env),
 					query.code,
 				);
 				const contact = await getContactUser(userToken.accessToken);

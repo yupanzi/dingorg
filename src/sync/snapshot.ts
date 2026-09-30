@@ -1,8 +1,12 @@
 import { eq, getTableColumns, sql } from "drizzle-orm";
 import type { Database } from "~/db";
 import { orgSnapshots } from "~/db/schema";
-import { invalidateAccessToken } from "~/dingtalk/access-token";
-import { describeFailure, isTokenError } from "~/dingtalk/client";
+import { getAccessToken, invalidateAccessToken } from "~/dingtalk/access-token";
+import {
+	type DingtalkCredentials,
+	describeFailure,
+	isTokenError,
+} from "~/dingtalk/client";
 import { fetchOrg } from "~/dingtalk/fetch-org";
 import type { OrgApiUser } from "~/domain/org-api";
 import { buildSnapshot, type OrgSnapshotData } from "~/domain/org-snapshot";
@@ -10,7 +14,7 @@ import { REFRESH_COOLDOWN_MS } from "~/domain/sync";
 import type { Log } from "~/log";
 
 /**
- * 组织快照的读与刷新：每个 appKey 一行、整份替换。
+ * 组织快照的读与刷新：只拉自有应用，一个 appKey 一行、整份替换。
  *
  * 多副本并发刷新不需要锁：只有更晚开始的那份能覆盖（`fetched_at` 条件写），最坏白拉一次。
  */
@@ -19,6 +23,8 @@ type SnapshotRow = typeof orgSnapshots.$inferSelect;
 
 export interface SnapshotDeps {
 	db: Database;
+	/** 自有应用的凭证，唯一拿来拉通讯录的那对 */
+	dingtalk: DingtalkCredentials;
 	/** 传请求的 logger：带 reqId，才对得上审计的 `request_id` */
 	log: Log;
 }
@@ -52,7 +58,8 @@ export async function readSnapshotMeta(
 }
 
 /**
- * ⚠️ OIDC 准入只能拿自有 appKey 来查：别的应用的可见范围可能更宽，甚至属于别的企业。
+ * ⚠️ OIDC 准入只能拿自有 appKey 来查：表里可能留着别的 appKey 的行（换过
+ * `DINGTALK_APP_KEY`），它的可见范围可能更宽，甚至属于别的企业。
  * 在 PG 里挑出那一个人：一次登录会调好几次 `findAccount`。
  */
 export async function findMember(
@@ -98,25 +105,22 @@ export class SnapshotUnavailableError extends Error {
 	}
 }
 
-// 单飞键只用 appKey：走到这里的调用方都已通过鉴权，共享结果不越权
+// 按 appKey 合并：结果是那个应用的快照，别的 appKey 搭上来就拿错了数据
 const inflight = new Map<string, Promise<RefreshResult>>();
 
 /**
  * 并发合并成一次拉取；距上一次尝试（成功或失败）结束不到 `REFRESH_COOLDOWN_MS` 不外呼。
  * 失败时抛出，旧快照原样保留。
  */
-export function refreshSnapshot(
-	deps: SnapshotDeps,
-	appKey: string,
-	accessToken: string,
-): Promise<RefreshResult> {
+export function refreshSnapshot(deps: SnapshotDeps): Promise<RefreshResult> {
+	const appKey = deps.dingtalk.clientId;
 	const pending = inflight.get(appKey);
 	if (pending) {
 		deps.log.info({ appKey }, "合并到进行中的组织快照刷新");
 		return pending;
 	}
 
-	const p = doRefresh(deps, appKey, accessToken).finally(() => {
+	const p = doRefresh(deps).finally(() => {
 		inflight.delete(appKey);
 	});
 	inflight.set(appKey, p);
@@ -126,12 +130,10 @@ export function refreshSnapshot(
 /** 有快照就原样返回（不管多旧），从没拉成功过才当场拉一次 */
 export async function getOrFetchSnapshot(
 	deps: SnapshotDeps,
-	appKey: string,
-	accessToken: string,
 ): Promise<LoadedSnapshot> {
-	const row = await readSnapshot(deps.db, appKey);
+	const row = await readSnapshot(deps.db, deps.dingtalk.clientId);
 	if (isLoaded(row)) return row;
-	return (await refreshSnapshot(deps, appKey, accessToken)).row;
+	return (await refreshSnapshot(deps)).row;
 }
 
 // 成功写与失败记录共用：失败记录不能挂到别的副本刚写成的新快照上
@@ -139,11 +141,8 @@ function startedBefore(t: Date) {
 	return sql`${orgSnapshots.fetchedAt} is null or ${orgSnapshots.fetchedAt} < ${t}`;
 }
 
-async function doRefresh(
-	deps: SnapshotDeps,
-	appKey: string,
-	accessToken: string,
-): Promise<RefreshResult> {
+async function doRefresh(deps: SnapshotDeps): Promise<RefreshResult> {
+	const appKey = deps.dingtalk.clientId;
 	const current = await readSnapshot(deps.db, appKey);
 	// 冷却看上一次尝试而非成功：否则拉不成功的 appKey 每读一次就重拉一次
 	const wait = current
@@ -156,7 +155,10 @@ async function doRefresh(
 
 	// 开始时刻：按它算数据年龄只会偏大；也是并发写的判据
 	const startedAt = new Date();
+	let accessToken: string | undefined;
 	try {
+		// 在 try 里：token 申请失败（secret 错、钉钉故障）也要进 `error`，状态端点才报得出来
+		accessToken = await getAccessToken(deps.db, deps.dingtalk);
 		const built = buildSnapshot(
 			await fetchOrg(accessToken),
 			current?.data?.users,
@@ -171,7 +173,7 @@ async function doRefresh(
 	} catch (err) {
 		// ⚠️ `invalidateAccessToken` 唯一的生产调用方。不清的话坏 token 留在进程与 PG
 		// 两级缓存里，可自愈的故障变成必须重启
-		if (isTokenError(err)) {
+		if (accessToken && isTokenError(err)) {
 			await invalidateAccessToken(deps.db, appKey, accessToken);
 		}
 		await recordFailure(deps.db, appKey, startedAt, describeFailure(err));
