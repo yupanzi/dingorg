@@ -3,17 +3,14 @@ import type { FastifyInstance } from "fastify";
 import type { Deps } from "~/deps";
 import type { DingtalkCredentials } from "~/dingtalk/client";
 import type { OrgApiSyncResponse, OrgApiSyncStatus } from "~/domain/org-api";
-import { SYNC_TRIGGER_SUMMARY, syncTriggerSummary } from "~/domain/sync";
+import { SYNC_TRIGGER_SUMMARY } from "~/domain/sync";
 import { AUDIT_ACTIONS } from "~/resources";
-import {
-	readSnapshotMeta,
-	refreshSnapshot,
-	type SnapshotMeta,
-} from "~/sync/snapshot";
+import { syncOrg } from "~/sync/org";
+import { readSyncState, type SyncState } from "~/sync/store";
 
 import { requireCaller } from "./guard";
 
-/** `POST` 是调用方手动刷新的入口；每日 orgsync 直接调同一个 `refreshSnapshot` */
+/** `POST` 是调用方手动同步的入口；每日 orgsync 直接调同一个 `syncOrg` */
 export function registerSyncRoutes(
 	app: FastifyInstance,
 	deps: Deps,
@@ -24,7 +21,7 @@ export function registerSyncRoutes(
 		{ config: { auditAction: AUDIT_ACTIONS.syncStatus } },
 		async (req) => {
 			requireCaller(req);
-			return toStatus(await readSnapshotMeta(deps.db, dingtalk.clientId));
+			return toStatus(await readSyncState(deps.db, dingtalk.clientId));
 		},
 	);
 
@@ -34,35 +31,37 @@ export function registerSyncRoutes(
 		async (req) => {
 			requireCaller(req);
 			req.auditPatch.targetId = dingtalk.clientId;
-			// 先写失败的说法：拉取抛出后由 guard 的 error handler 应答，走不回这里
+			// 先写失败的说法：同步抛出后由 guard 的 error handler 应答，走不回这里
 			req.auditPatch.details = { summary: SYNC_TRIGGER_SUMMARY.failed };
 
-			// 同步拉完再返回：没有后台执行体，调用方拿到响应就是结果
-			const { row, refreshed } = await refreshSnapshot({
+			// 同步拉完再返回：没有后台执行体，调用方拿到响应就是结果。别处正在拉时不等它
+			const { outcome, state } = await syncOrg({
 				db: deps.db,
 				dingtalk,
 				log: req.log,
 			});
-			req.auditPatch.details = { summary: syncTriggerSummary(refreshed) };
-			const body: OrgApiSyncResponse = { refreshed, ...toStatus(row) };
+			req.auditPatch.details = { summary: SYNC_TRIGGER_SUMMARY[outcome] };
+			const body: OrgApiSyncResponse = {
+				refreshed: outcome === "refreshed",
+				...toStatus(state),
+			};
 			return body;
 		},
 	);
 }
 
 /**
- * `state`：`never` 从没拉成功过 · `failed` 最近一次失败（`fetchedAt` 仍指向上一份成功的）
- * · `ok`。「拉成功过没有」看 `fetchedAt`（与 `data` 同空同非空）；计数列从没成功过时是
- * 默认的 0，不能原样报出去。
+ * `state`：`never` 自有应用没有可用的数据 · `failed` 最近一次失败（`fetchedAt` 仍指向上一轮
+ * 成功的）· `ok`。
  */
-function toStatus(row: SnapshotMeta | null): OrgApiSyncStatus {
-	const loaded = row?.fetchedAt ? row : null;
+function toStatus(s: SyncState): OrgApiSyncStatus {
 	return {
-		state: !loaded ? "never" : loaded.error ? "failed" : "ok",
-		fetchedAt: row?.fetchedAt?.toISOString() ?? null,
-		attemptedAt: row?.attemptedAt.toISOString() ?? null,
-		error: row?.error ?? null,
-		userCount: loaded?.userCount ?? null,
-		deptCount: loaded?.deptCount ?? null,
+		state: !s.fetchedAt ? "never" : s.error ? "failed" : "ok",
+		fetchedAt: s.fetchedAt?.toISOString() ?? null,
+		attemptedAt: s.attemptedAt?.toISOString() ?? null,
+		error: s.error,
+		syncing: s.syncing,
+		userCount: s.userCount,
+		deptCount: s.deptCount,
 	};
 }

@@ -26,7 +26,7 @@ export async function registerApi(
 		scope.get("/api/v1", async () => ({
 			service: "dingorg",
 			description:
-				"钉钉 → 标准 OIDC 的桥接 + 组织架构快照。REST 面认本服务配发的 API key，认证面走 /oidc/*。",
+				"钉钉 → 标准 OIDC 的桥接 + 钉钉组织架构的同步。REST 面认本服务配发的 API key，认证面走 /oidc/*。",
 			auth: {
 				scheme: "Bearer",
 				example:
@@ -37,14 +37,14 @@ export async function registerApi(
 				{
 					method: "GET",
 					path: "/api/v1/org/users",
-					note: "快照不按时间过期，首次调用会当场拉取；响应的 fetchedAt 是数据时刻",
+					note: "只列当前成员；数据不按时间过期，首次调用会当场同步；响应的 fetchedAt 是数据时刻",
 				},
 				{ method: "GET", path: "/api/v1/org/departments" },
-				{ method: "GET", path: "/api/v1/sync", note: "快照的状态" },
+				{ method: "GET", path: "/api/v1/sync", note: "同步的状态" },
 				{
 					method: "POST",
 					path: "/api/v1/sync",
-					note: "同步地刷新快照；距上次拉取尝试不到 1 分钟时不外呼",
+					note: "当场同步一次再返回；距上次尝试不到 1 分钟、或别处正在同步时不外呼",
 				},
 			],
 			oidc: {

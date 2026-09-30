@@ -22,5 +22,7 @@ export default defineConfig({
 	test: {
 		include: ["src/**/*.test.ts"],
 		environment: "node",
+		// ⚠️ 组织同步的表是全库一份：集成测试文件并行跑会互相清掉对方灌的数据
+		fileParallelism: false,
 	},
 });

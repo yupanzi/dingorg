@@ -1,5 +1,5 @@
 /**
- * 对外组织 API 的响应契约，也是 `org_snapshots.data` 的形状。
+ * 对外组织 API 的响应契约，由 `~/sync/store` 从镜像表组装。
  * 字段名借 SCIM 的词汇（OIDC 标准 claim 里没有雇佣关系属性）。
  */
 
@@ -19,12 +19,12 @@ export interface OrgApiUserDept {
 }
 
 /**
- * 系统字段平铺在顶层，钉钉原文收在 `dingtalk` 里（保持钉钉的字段名）。快照里只有当前
- * 可见的人，离职者直接消失。
+ * 系统字段平铺在顶层，钉钉原文收在 `dingtalk` 里（保持钉钉的字段名）。只列当前可见的人：
+ * 离开的人在库里留着（`left_at`），但不出现在这里。
  */
 export interface OrgApiUser {
 	/**
-	 * 企业邮箱的 local part，没有则取显示名括号前的部分；快照内唯一。会随企业邮箱或
+	 * 企业邮箱的 local part，没有则取显示名括号前的部分；当前成员内唯一。会随企业邮箱或
 	 * 显示名变化，永不变的锚点是 `dingtalk.unionid`
 	 */
 	userName: string;
@@ -53,17 +53,17 @@ export interface OrgApiUser {
 	};
 }
 
-interface SnapshotStamp {
-	/** 产出这份快照的那次拉取的开始时刻（ISO 8601）。快照不按时间过期，数据多旧要让调用方看见 */
+interface SyncStamp {
+	/** 产出这份数据的那次拉取的开始时刻（ISO 8601）。数据不按时间过期，多旧要让调用方看见 */
 	fetchedAt: string;
 }
 
-export interface OrgApiUsersResponse extends SnapshotStamp {
+export interface OrgApiUsersResponse extends SyncStamp {
 	users: OrgApiUser[];
 	total: number;
 }
 
-export interface OrgApiDeptsResponse extends SnapshotStamp {
+export interface OrgApiDeptsResponse extends SyncStamp {
 	departments: OrgApiDept[];
 	total: number;
 }
@@ -74,11 +74,13 @@ export interface OrgApiSyncStatus {
 	fetchedAt: string | null;
 	attemptedAt: string | null;
 	error: string | null;
+	/** 有副本正持着同步租约在拉钉钉 */
+	syncing: boolean;
 	userCount: number | null;
 	deptCount: number | null;
 }
 
-/** `refreshed: false` = 冷却期内未外呼，返回的是现有快照 */
+/** `refreshed: false` = 冷却期内或别处正在同步，没有外呼，返回的是现有数据 */
 export interface OrgApiSyncResponse extends OrgApiSyncStatus {
 	refreshed: boolean;
 }

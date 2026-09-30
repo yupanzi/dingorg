@@ -11,7 +11,7 @@ import type { ApiKeyEntry } from "~/domain/api-key";
 import type { AuditDetails } from "~/domain/audit";
 import type { OrgApiErrorBody } from "~/domain/org-api";
 import type { AuditAction } from "~/resources";
-import { SnapshotUnavailableError } from "~/sync/snapshot";
+import { NotSyncedError } from "~/sync/org";
 
 /** REST 面的鉴权 + 审计 + 错误翻译。鉴权与审计绑在一起：加端点不会忘了记账 */
 
@@ -89,9 +89,11 @@ export function registerGuard(
 	 * 挂在作用域上，路由里不 try/catch。其余错误重新抛给根实例：5xx 不回显 message。
 	 */
 	app.setErrorHandler((err, req, reply) => {
-		if (err instanceof SnapshotUnavailableError) {
-			reply.header("retry-after", String(Math.ceil(err.retryAfterMs / 1000)));
-			return fail(reply, 503, "snapshot_unavailable", err.message);
+		if (err instanceof NotSyncedError) {
+			if (err.retryAfterSec !== null) {
+				reply.header("retry-after", String(err.retryAfterSec));
+			}
+			return fail(reply, 503, "not_synced", err.message);
 		}
 		if (err instanceof DingtalkError || isTimeoutError(err)) {
 			req.log.warn({ err }, "钉钉调用失败");

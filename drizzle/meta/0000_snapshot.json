@@ -1,5 +1,5 @@
 {
-	"id": "6eead287-1b98-4dc6-b5a8-90cf8ea8d515",
+	"id": "28e67e55-a7a7-4db4-88e5-7d1079027288",
 	"prevId": "00000000-0000-0000-0000-000000000000",
 	"version": "7",
 	"dialect": "postgresql",
@@ -317,21 +317,59 @@
 			"checkConstraints": {},
 			"isRLSEnabled": false
 		},
-		"public.dingorg_org_snapshots": {
-			"name": "dingorg_org_snapshots",
+		"public.dingorg_org_departments": {
+			"name": "dingorg_org_departments",
 			"schema": "",
 			"columns": {
-				"app_key": {
-					"name": "app_key",
-					"type": "text",
+				"id": {
+					"name": "id",
+					"type": "bigint",
 					"primaryKey": true,
 					"notNull": true
 				},
-				"data": {
-					"name": "data",
-					"type": "jsonb",
+				"parent_id": {
+					"name": "parent_id",
+					"type": "bigint",
 					"primaryKey": false,
 					"notNull": false
+				},
+				"name": {
+					"name": "name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"ancestor_ids": {
+					"name": "ancestor_ids",
+					"type": "bigint[]",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.dingorg_org_sync": {
+			"name": "dingorg_org_sync",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "smallint",
+					"primaryKey": true,
+					"notNull": true,
+					"default": 1
+				},
+				"app_key": {
+					"name": "app_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
 				},
 				"fetched_at": {
 					"name": "fetched_at",
@@ -343,7 +381,7 @@
 					"name": "attempted_at",
 					"type": "timestamp with time zone",
 					"primaryKey": false,
-					"notNull": true
+					"notNull": false
 				},
 				"error": {
 					"name": "error",
@@ -351,22 +389,192 @@
 					"primaryKey": false,
 					"notNull": false
 				},
-				"user_count": {
-					"name": "user_count",
-					"type": "integer",
+				"lease_holder": {
+					"name": "lease_holder",
+					"type": "text",
 					"primaryKey": false,
-					"notNull": true,
-					"default": 0
+					"notNull": false
 				},
-				"dept_count": {
-					"name": "dept_count",
-					"type": "integer",
+				"lease_until": {
+					"name": "lease_until",
+					"type": "timestamp with time zone",
 					"primaryKey": false,
-					"notNull": true,
-					"default": 0
+					"notNull": false
 				}
 			},
 			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {
+				"org_sync_singleton": {
+					"name": "org_sync_singleton",
+					"value": "\"dingorg_org_sync\".\"id\" = 1"
+				},
+				"org_sync_lease_pair": {
+					"name": "org_sync_lease_pair",
+					"value": "(\"dingorg_org_sync\".\"lease_holder\" is null) = (\"dingorg_org_sync\".\"lease_until\" is null)"
+				}
+			},
+			"isRLSEnabled": false
+		},
+		"public.dingorg_org_user_depts": {
+			"name": "dingorg_org_user_depts",
+			"schema": "",
+			"columns": {
+				"userid": {
+					"name": "userid",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"dept_id": {
+					"name": "dept_id",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"is_leader": {
+					"name": "is_leader",
+					"type": "boolean",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {
+				"dingorg_org_user_depts_userid_dingorg_org_users_userid_fk": {
+					"name": "dingorg_org_user_depts_userid_dingorg_org_users_userid_fk",
+					"tableFrom": "dingorg_org_user_depts",
+					"tableTo": "dingorg_org_users",
+					"columnsFrom": ["userid"],
+					"columnsTo": ["userid"],
+					"onDelete": "no action",
+					"onUpdate": "no action"
+				},
+				"dingorg_org_user_depts_dept_id_dingorg_org_departments_id_fk": {
+					"name": "dingorg_org_user_depts_dept_id_dingorg_org_departments_id_fk",
+					"tableFrom": "dingorg_org_user_depts",
+					"tableTo": "dingorg_org_departments",
+					"columnsFrom": ["dept_id"],
+					"columnsTo": ["id"],
+					"onDelete": "no action",
+					"onUpdate": "no action"
+				}
+			},
+			"compositePrimaryKeys": {
+				"dingorg_org_user_depts_userid_dept_id_pk": {
+					"name": "dingorg_org_user_depts_userid_dept_id_pk",
+					"columns": ["userid", "dept_id"]
+				}
+			},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.dingorg_org_users": {
+			"name": "dingorg_org_users",
+			"schema": "",
+			"columns": {
+				"userid": {
+					"name": "userid",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"unionid": {
+					"name": "unionid",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"user_name": {
+					"name": "user_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"display_name": {
+					"name": "display_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"email": {
+					"name": "email",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"titles": {
+					"name": "titles",
+					"type": "text[]",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"ranks": {
+					"name": "ranks",
+					"type": "text[]",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"job_level": {
+					"name": "job_level",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"title": {
+					"name": "title",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"extension": {
+					"name": "extension",
+					"type": "jsonb",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"avatar": {
+					"name": "avatar",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"org_email": {
+					"name": "org_email",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"left_at": {
+					"name": "left_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": false
+				}
+			},
+			"indexes": {
+				"org_users_unionid_current_idx": {
+					"name": "org_users_unionid_current_idx",
+					"columns": [
+						{
+							"expression": "unionid",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"where": "\"dingorg_org_users\".\"left_at\" is null",
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},

@@ -30,14 +30,46 @@ CREATE TABLE "dingorg_oidc_payloads" (
 	CONSTRAINT "dingorg_oidc_payloads_model_id_pk" PRIMARY KEY("model","id")
 );
 --> statement-breakpoint
-CREATE TABLE "dingorg_org_snapshots" (
-	"app_key" text PRIMARY KEY NOT NULL,
-	"data" jsonb,
+CREATE TABLE "dingorg_org_departments" (
+	"id" bigint PRIMARY KEY NOT NULL,
+	"parent_id" bigint,
+	"name" text NOT NULL,
+	"ancestor_ids" bigint[] NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "dingorg_org_sync" (
+	"id" smallint PRIMARY KEY DEFAULT 1 NOT NULL,
+	"app_key" text NOT NULL,
 	"fetched_at" timestamp with time zone,
-	"attempted_at" timestamp with time zone NOT NULL,
+	"attempted_at" timestamp with time zone,
 	"error" text,
-	"user_count" integer DEFAULT 0 NOT NULL,
-	"dept_count" integer DEFAULT 0 NOT NULL
+	"lease_holder" text,
+	"lease_until" timestamp with time zone,
+	CONSTRAINT "org_sync_singleton" CHECK ("dingorg_org_sync"."id" = 1),
+	CONSTRAINT "org_sync_lease_pair" CHECK (("dingorg_org_sync"."lease_holder" is null) = ("dingorg_org_sync"."lease_until" is null))
+);
+--> statement-breakpoint
+CREATE TABLE "dingorg_org_user_depts" (
+	"userid" text NOT NULL,
+	"dept_id" bigint NOT NULL,
+	"is_leader" boolean NOT NULL,
+	CONSTRAINT "dingorg_org_user_depts_userid_dept_id_pk" PRIMARY KEY("userid","dept_id")
+);
+--> statement-breakpoint
+CREATE TABLE "dingorg_org_users" (
+	"userid" text PRIMARY KEY NOT NULL,
+	"unionid" text,
+	"user_name" text NOT NULL,
+	"display_name" text NOT NULL,
+	"email" text,
+	"titles" text[] NOT NULL,
+	"ranks" text[] NOT NULL,
+	"job_level" text,
+	"title" text,
+	"extension" jsonb,
+	"avatar" text,
+	"org_email" text,
+	"left_at" timestamp with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "dingorg_app_secrets" (
@@ -46,6 +78,8 @@ CREATE TABLE "dingorg_app_secrets" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "dingorg_org_user_depts" ADD CONSTRAINT "dingorg_org_user_depts_userid_dingorg_org_users_userid_fk" FOREIGN KEY ("userid") REFERENCES "public"."dingorg_org_users"("userid") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dingorg_org_user_depts" ADD CONSTRAINT "dingorg_org_user_depts_dept_id_dingorg_org_departments_id_fk" FOREIGN KEY ("dept_id") REFERENCES "public"."dingorg_org_departments"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "audit_log_at_idx" ON "dingorg_audit_log" USING btree ("at");--> statement-breakpoint
 CREATE INDEX "audit_log_actor_idx" ON "dingorg_audit_log" USING btree ("actor_id");--> statement-breakpoint
 CREATE INDEX "audit_log_action_idx" ON "dingorg_audit_log" USING btree ("action");--> statement-breakpoint
@@ -53,4 +87,5 @@ CREATE INDEX "audit_log_target_idx" ON "dingorg_audit_log" USING btree ("target_
 CREATE INDEX "audit_log_request_id_idx" ON "dingorg_audit_log" USING btree ("request_id");--> statement-breakpoint
 CREATE INDEX "oidc_payloads_grant_id_idx" ON "dingorg_oidc_payloads" USING btree ("grant_id");--> statement-breakpoint
 CREATE INDEX "oidc_payloads_uid_idx" ON "dingorg_oidc_payloads" USING btree ("uid");--> statement-breakpoint
-CREATE INDEX "oidc_payloads_expires_at_idx" ON "dingorg_oidc_payloads" USING btree ("expires_at");
+CREATE INDEX "oidc_payloads_expires_at_idx" ON "dingorg_oidc_payloads" USING btree ("expires_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "org_users_unionid_current_idx" ON "dingorg_org_users" USING btree ("unionid") WHERE "dingorg_org_users"."left_at" is null;

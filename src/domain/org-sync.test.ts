@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { OrgApiUser } from "./org-api";
-import {
-	buildSnapshot,
-	type FetchedOrg,
-	type MemberFields,
-} from "./org-snapshot";
+import { buildOrgSync, type FetchedOrg, type MemberFields } from "./org-sync";
 
 const DEPTS = [
 	{ id: 3, parentId: 1, name: "乙中心", ancestorIds: [1] },
@@ -21,13 +17,13 @@ function fetched(
 
 function byUserName(users: OrgApiUser[], userName: string): OrgApiUser {
 	const u = users.find((x) => x.userName === userName);
-	if (!u) throw new Error(`快照里没有 ${userName}`);
+	if (!u) throw new Error(`这一轮里没有 ${userName}`);
 	return u;
 }
 
-describe("buildSnapshot", () => {
+describe("buildOrgSync", () => {
 	it("一人挂多个部门合成一条，主管标记按部门各自保留", () => {
-		const { data } = buildSnapshot(
+		const { data } = buildOrgSync(
 			fetched([
 				{
 					deptId: 2,
@@ -62,8 +58,22 @@ describe("buildSnapshot", () => {
 		]);
 	});
 
+	it("个人的部门归属按部门 id 排序，不随钉钉返回顺序变", () => {
+		const { data } = buildOrgSync(
+			fetched(
+				[3, 2].map((deptId) => ({
+					deptId,
+					members: [{ userid: "u1", name: "x", org_email: "x@x.com" }],
+				})),
+			),
+			undefined,
+		);
+
+		expect(byUserName(data.users, "x").depts.map((d) => d.id)).toEqual([2, 3]);
+	});
+
 	it("部门按 id、成员按 userName 排序", () => {
-		const { data } = buildSnapshot(
+		const { data } = buildOrgSync(
 			fetched([
 				{
 					deptId: 1,
@@ -81,7 +91,7 @@ describe("buildSnapshot", () => {
 	});
 
 	it("没有企业邮箱：email 为 null（不推导），userName 取显示名", () => {
-		const { data } = buildSnapshot(
+		const { data } = buildOrgSync(
 			fetched([{ deptId: 1, members: [{ userid: "u1", name: "carol(丙)" }] }]),
 			undefined,
 		);
@@ -92,7 +102,7 @@ describe("buildSnapshot", () => {
 	});
 
 	it("有企业邮箱：email 是它小写后的值，dingtalk.orgEmail 保留原文", () => {
-		const { data } = buildSnapshot(
+		const { data } = buildOrgSync(
 			fetched([
 				{
 					deptId: 1,
@@ -108,7 +118,7 @@ describe("buildSnapshot", () => {
 	});
 
 	it("无法归一化身份的成员跳过，并计入 skipped", () => {
-		const { data, skipped } = buildSnapshot(
+		const { data, skipped } = buildOrgSync(
 			fetched([{ deptId: 1, members: [{ userid: "u9", name: "" }] }]),
 			undefined,
 		);
@@ -119,7 +129,7 @@ describe("buildSnapshot", () => {
 	});
 
 	it("title 缺失与空串都归一成 null，extension 解析出职级", () => {
-		const { data } = buildSnapshot(
+		const { data } = buildOrgSync(
 			fetched([
 				{
 					deptId: 1,
@@ -155,11 +165,11 @@ describe("buildSnapshot", () => {
 		];
 
 		it("没有上一版时按 userid 取第一个，结果不随返回顺序翻转", () => {
-			const one = buildSnapshot(
+			const one = buildOrgSync(
 				fetched([{ deptId: 1, members: twins }]),
 				undefined,
 			);
-			const other = buildSnapshot(
+			const other = buildOrgSync(
 				fetched([{ deptId: 1, members: [...twins].reverse() }]),
 				undefined,
 			);
@@ -173,12 +183,12 @@ describe("buildSnapshot", () => {
 		});
 
 		it("上一版的持有者优先，新来的同名者不能把他挤掉", () => {
-			const prev = buildSnapshot(
+			const prev = buildOrgSync(
 				fetched([{ deptId: 1, members: [twins[0] as MemberFields] }]),
 				undefined,
 			).data.users;
 
-			const { data } = buildSnapshot(
+			const { data } = buildOrgSync(
 				fetched([{ deptId: 1, members: twins }]),
 				prev,
 			);
@@ -188,7 +198,7 @@ describe("buildSnapshot", () => {
 		});
 
 		it("原持有者离职重入职（userid 变了、unionid 不变）仍被认出", () => {
-			const prev = buildSnapshot(
+			const prev = buildOrgSync(
 				fetched([{ deptId: 1, members: [twins[0] as MemberFields] }]),
 				undefined,
 			).data.users;
@@ -198,7 +208,7 @@ describe("buildSnapshot", () => {
 				name: "dave",
 				unionid: "union-b",
 			};
-			const { data } = buildSnapshot(
+			const { data } = buildOrgSync(
 				fetched([{ deptId: 1, members: [rehired, twins[1] as MemberFields] }]),
 				prev,
 			);

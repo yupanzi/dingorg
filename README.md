@@ -3,9 +3,9 @@
 把一个**钉钉企业内部应用**变成组织的身份基础设施。只做两件事：
 
 1. **钉钉认证 → 标准 OIDC**：下游用任意标准 OIDC 客户端库接入，底层由钉钉扫码完成认证。
-2. **组织架构快照 → REST 出口**：调用方出示本服务配发的 **API key**，读到自有钉钉应用可见范围内
-   的成员与部门（含 unionId、企业邮箱、职级、部门主管）。钉钉凭证只在本服务手里，调用方碰不到；
-   快照存在 Postgres 里。
+2. **钉钉组织架构 → 同步镜像 → REST 出口**：调用方出示本服务配发的 **API key**，读到自有钉钉应用
+   可见范围内的成员与部门（含 unionId、企业邮箱、职级、部门主管）。钉钉凭证只在本服务手里，调用方
+   碰不到；同步来的组织数据存在 Postgres 的镜像表里。
 
 外部依赖只有 Postgres。没有管理界面；凭证只有两种静态配置：登录用的 OIDC client 与 REST 用的
 API key，同放在 `AUTH_JSON` 一个数组里、按 `type` 区分，两者互不相干。
@@ -17,25 +17,29 @@ API key，同放在 `AUTH_JSON` 一个数组里、按 `type` 区分，两者互�
                   ┌──────────── dingorg（单进程）─────────────┐
   钉钉扫码 ──────► │  /oidc/*        OIDC Provider            │ ──► 下游应用
                   │  /oidc/interaction  钉钉登录交互          │     (authentik…)
-                  │  /api/v1/*      组织快照（自有应用）      │ ◄── 内部系统
+                  │  /api/v1/*      组织数据（自有应用）      │ ◄── 内部系统
                   └──────────────────┬───────────────────────┘     （出示
                                      │                              API key）
                                   Postgres
                                      ▲
-  cron orgsync ──────────────────────┤  （每天拉一次钉钉，与 POST /api/v1/sync 同一份刷新）
+  cron orgsync ──────────────────────┤  （每天同步一次钉钉，与 POST /api/v1/sync 同一份实现）
   cron oidcpurge ────────────────────┘  （清理 OIDC 过期工件）
 ```
 
 一个常驻进程 + 三个跑完即退的任务（migrate、oidcpurge、orgsync），共用一个镜像。
 
-快照只有一份 —— 自有应用（`DINGTALK_APP_KEY`）的。它既是 REST 出口的数据，也是 **OIDC 准入的
-唯一依据**。刷新只有一份实现，两个入口，常驻进程自己不定时刷新：
+组织同步只有一份 —— 自有应用（`DINGTALK_APP_KEY`）的：一行同步状态加部门、成员、成员-部门三张
+镜像表，每轮在一个事务里整体换新。它既是 REST 出口的数据，也是 **OIDC 准入的唯一依据**（当前成员才
+能登录）。同步只有一份实现，两个入口，常驻进程自己不定时同步：
 
-- 每日 cron orgsync（默认 UTC 04:00）直接调刷新，不经 HTTP、不需要凭证。离职生效、新人可登录
+- 每日 cron orgsync（默认 UTC 04:00）直接调同步，不经 HTTP、不需要凭证。离职生效、新人可登录
   的窗口因此**最长约 24 小时**。
 - `POST /api/v1/sync`：持 API key 的调用方手动触发。
+- **多副本安全**：同一时刻只有一个副本（或任务）在拉钉钉，靠同步状态行上的租约；撞上的一方不外呼，
+  直接用现有数据。重复同步是幂等的：钉钉没变，结果就不变。
+- 这一轮里不在了的成员（离职、移出可见范围）**标记离开、整行保留**，不再能登录、也不出现在 API 里。
 - ⚠️ **空库时谁都登录不进来**：K8s 部署时 hook 会跑一次，本地要手动 `pnpm orgsync`。
-- 读的时候不按时间过期：从没拉成功过才当场拉一次，之后原样返回。
+- 读的时候不按时间过期：从没同步成功过才当场同步一次，之后原样返回。
 
 ## 快速开始
 
@@ -51,7 +55,7 @@ pnpm -s auth:oidc --name local --redirect-uri http://localhost:9000/callback
 pnpm db:migrate
 pnpm dev          # http://localhost:3080
 
-# 4. 拉一次自有应用的快照（不拉的话谁都登录不进来；直连库与钉钉，不依赖服务在跑）
+# 4. 同步一次自有应用的组织数据（不同步的话谁都登录不进来；直连库与钉钉，不依赖服务在跑）
 pnpm orgsync
 ```
 
@@ -129,10 +133,10 @@ id_token 与 userinfo 都给出这些，**集合是固定的**：
 
 ### 撤销访问的时效
 
-把人从钉钉通讯录移除后，自有快照下一次刷新（**最长约 24 小时**）后新的登录被拒；但**未过期的
-access_token（1 小时）仍然可用**，下游自己的会话更在本系统之外。要立即切断：
+把人从钉钉通讯录移除后，下一次同步（**最长约 24 小时**）把他标记为离开，之后新的登录被拒；但
+**未过期的 access_token（1 小时）仍然可用**，下游自己的会话更在本系统之外。要立即切断：
 
-1. 手动触发一次刷新：`kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`，
+1. 手动触发一次同步：`kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`，
    或 `curl -X POST -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/sync`（任一 API key）；
 2. 再去各个下游分别登出。
 
@@ -166,29 +170,31 @@ kubectl get secret dingorg-app -n <ns> -o jsonpath='{.data.AUTH_JSON}' | base64 
 | --- | --- |
 | `GET /api/v1/org/users` | `{ users, total, fetchedAt }` |
 | `GET /api/v1/org/departments` | `{ departments, total, fetchedAt }`，部门是 `{ id, parentId, name, ancestorIds }`，根部门 id 为 1、名字是企业名 |
-| `GET /api/v1/sync` | `{ state, fetchedAt, attemptedAt, error, userCount, deptCount }`，`state` 为 `never` / `failed` / `ok` |
-| `POST /api/v1/sync` | 同上，外加 `refreshed`。**同步地拉完再返回** |
+| `GET /api/v1/sync` | `{ state, fetchedAt, attemptedAt, error, syncing, userCount, deptCount }`，`state` 为 `never` / `failed` / `ok`，`syncing` 表示有副本正在拉钉钉 |
+| `POST /api/v1/sync` | 同上，外加 `refreshed`。**同步地拉完再返回**；别处正在同步时不等它，立即返回 `refreshed: false` |
 
 ```bash
 curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/org/users | jq
 ```
 
-- 第一次调用当场拉取（几百人要几秒到几十秒），之后原样返回；`fetchedAt` 是数据时刻。
-- 距上一次拉取尝试（成功或失败）结束不到 1 分钟时不外呼：有快照就原样返回（`refreshed: false`），
-  从没拉成功过则回 `503`。
-- 快照里只有当前可见的人，离职者直接消失。刷新失败时旧快照原样保留。
+- 第一次调用当场同步（几百人要几秒到几十秒），之后原样返回；`fetchedAt` 是数据时刻。
+- 距上一次同步尝试（成功或失败）结束不到 1 分钟、或别处正在同步时不外呼：有数据就原样返回
+  （`refreshed: false`），没有则回 `503`。
+- 只列当前可见的人，离开的人不出现（库里留着离开记录，不经 API 暴露）。同步失败时已有数据原样保留。
 - 错误体统一是 `{ "error": { "code", "message" } }`：
   - `401 unauthorized`：凭证不对，**一律不说原因**（没带、格式不对、未知 id、key 错都是它）。
   - `502 dingtalk_error`：拉取时钉钉报错（含本服务的钉钉 token 申请失败），带
     `dingtalk: { errcode, code, status }`（最常见是 `60020`：本服务的出口 IP 不在自有应用的白名单里）。
-  - `503 snapshot_unavailable`：从没拉成功过、上一次又刚失败；`message` 带原因，`Retry-After` 给出秒数。
+  - `503 not_synced`：自有应用还没有可用的数据，`message` 讲原因：上一次刚失败（带失败原因）或别处
+    正在同步，这两种带 `Retry-After`；现有数据属于另一个钉钉应用（换过 `DINGTALK_APP_KEY`）时不带，
+    要先显式同步一次（orgsync 或 `POST /api/v1/sync`）。
   - `504 dingtalk_timeout`：请求钉钉超时。
 
 成员对象里，系统字段平铺在顶层，钉钉原始字段收在 `dingtalk` 里（保持钉钉的字段名）：
 
 ```jsonc
 {
-  "userName": "alice",              // 企业邮箱 local part，没有则取显示名；快照内唯一
+  "userName": "alice",              // 企业邮箱 local part，没有则取显示名；当前成员内唯一
   "displayName": "Alice(爱丽丝)",
   "email": "alice@example.com",     // 只取企业邮箱，没有就是 null
   "depts": [{ "id": 12, "name": "技术中心", "isLeader": true }],
@@ -209,7 +215,7 @@ curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/org/users | 
 - **关联键**：`userName` 可读，但会随企业邮箱或显示名变化；永不变的是 `dingtalk.unionid`。
   两人得出同一个 `userName`（同名且都没有企业邮箱）时只保留原持有者，另一人不在列表里、也登录不了。
 - `ranks` 的职级词表与 `jobLevel` 的「职务」字段按本组织定，别的企业多半拿到 `[]` 与 `null`。
-- ⚠️ **`dingtalk.extension` 原样透传**：钉钉后台新加的自定义字段（可能是手机号）下次刷新后就会出现在响应里。
+- ⚠️ **`dingtalk.extension` 原样透传**：钉钉后台新加的自定义字段（可能是手机号）下次同步后就会出现在响应里。
 
 ## 审计
 
@@ -270,15 +276,19 @@ helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.y
 
 - 必填的 values：`image.repository`、`ingress.host`（`PUBLIC_ORIGIN` 从它派生）。`image.tag` 留空
   即所用 chart 的 appVersion，要钉别的版本才填。
-- **每次 install / upgrade 后自动刷新一次快照**，首次部署不用手动触发。它失败（最常见是出口
+- **每次 install / upgrade 后自动同步一次组织数据**，首次部署不用手动触发。它失败（最常见是出口
   IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。
 - ⚠️ **改了 Secret 之后必须 bump `values.secretVersion`**，否则常驻进程手里还是旧值。
 - **`orgsync` 失败要配告警**：它挂了的症状是静默的 —— 离职的人一直能登录。它直连库与钉钉
-  （与 `POST /api/v1/sync` 同一份刷新），失败隔 2 分钟重试、共 3 次，原因在它的日志里，也记进
-  状态端点的 `error`。schedule 在 `cronjobs.orgsync.schedule` 改。
+  （与 `POST /api/v1/sync` 同一份实现），失败隔 2 分钟重试、共 3 次，原因在它的日志里，也记进
+  状态端点的 `error`。撞上别处正在同步（如部署 hook 与 cron 重叠）时等它结束，不算失败。schedule 在
+  `cronjobs.orgsync.schedule` 改。
+- ⚠️ **换了 `DINGTALK_APP_KEY` 要显式同步一次**：旧应用的数据不会被自动接管（读的时候回 503）。
+  upgrade 的 hook 会做；`helm rollback` 没有 hook，回滚后手动
+  `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。
 - `POST /api/v1/sync` 大组织可能要几十秒，Ingress 的 `proxy-read-timeout`（nginx 默认 60 秒）要留够。
-- **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与快照刷新。
+- **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与组织同步。
 
 ## 版本与发布
 
@@ -306,11 +316,11 @@ pnpm dev              # 起服务（tsx watch）
 pnpm build            # tsup 打包到 dist/
 pnpm typecheck
 pnpm check[:write]    # biome
-pnpm test             # vitest；集成测试需要 DATABASE_URL，缺了会静默跳过
+pnpm test             # vitest；集成测试需要 DATABASE_URL，缺了会静默跳过；跑完本地组织数据被清空
 pnpm db:generate      # 改完 schema 生成迁移
 pnpm db:migrate       # 本地迁移（drizzle-kit）
 pnpm migrate          # 本地试跑镜像里的迁移入口
-pnpm orgsync          # 刷新自有应用快照（即每日 cron 的入口，直连库与钉钉）
+pnpm orgsync          # 同步自有应用的组织数据（即每日 cron 的入口，直连库与钉钉）
 pnpm -s auth:oidc --name <名字> --redirect-uri <回调> [--merge]   # 生成下游 client（只在本机跑）
 pnpm -s auth:apikey --name <调用方> [--merge]                      # 生成 REST API key（只在本机跑）
 pnpm db:studio

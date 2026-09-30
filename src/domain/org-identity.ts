@@ -5,7 +5,7 @@
 
 /** domain 不依赖 IO 层，自己声明用得上的字段 */
 export interface DingtalkUserFields {
-	/** 类型上必有，但运行时不校验：缺了只能跳过这个人，不能让整轮快照失败 */
+	/** 类型上必有，但运行时不校验：缺了只能跳过这个人，不能让整轮同步失败 */
 	name: string;
 	org_email?: string | null;
 }

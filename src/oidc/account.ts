@@ -1,13 +1,13 @@
 import type { Account, FindAccount } from "oidc-provider";
 import type { Database } from "~/db";
-import { findMember } from "~/sync/snapshot";
+import { findMember } from "~/sync/store";
 
 /**
  * `sub` = 钉钉 unionId（userid 离职重入职会变）。
  *
- * ⚠️ 准入只有一条判据——在自有应用（`ownAppKey`）的快照里，且必须与 interaction 回调
- * 那道一致：这里拒、回调放行，就是「扫码成功 → 又要扫码」的死循环。别加 per-client 判断，
- * 谁能用哪个下游是下游自己的事。
+ * ⚠️ 准入只有一条判据——是自有应用（`ownAppKey`）同步结果里的当前成员（`findMember`），且必须
+ * 与 interaction 回调那道一致：这里拒、回调放行，就是「扫码成功 → 又要扫码」的死循环。
+ * 别加 per-client 判断，谁能用哪个下游是下游自己的事。
  */
 export function makeFindAccount(db: Database, ownAppKey: string): FindAccount {
 	return async (_ctx, sub): Promise<Account | undefined> => {
@@ -23,7 +23,7 @@ export function makeFindAccount(db: Database, ownAppKey: string): FindAccount {
 				preferred_username: u.userName,
 				// 没有企业邮箱的人两个都不发：发 null 可能被下游当成「有这个键」
 				...(u.email ? { email: u.email, email_verified: true } : {}),
-				...(u.dingtalk.avatar ? { picture: u.dingtalk.avatar } : {}),
+				...(u.avatar ? { picture: u.avatar } : {}),
 			}),
 		};
 	};

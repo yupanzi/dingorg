@@ -1,5 +1,5 @@
 import type { OrgApiDept } from "~/domain/org-api";
-import type { FetchedOrg } from "~/domain/org-snapshot";
+import type { FetchedOrg } from "~/domain/org-sync";
 
 import { getDept, listDeptUsersV2, listSubDepts } from "./client";
 
@@ -22,7 +22,7 @@ export async function fetchOrg(accessToken: string): Promise<FetchedOrg> {
 	];
 	await walkDepts(accessToken, ROOT_DEPT_ID, [ROOT_DEPT_ID], departments);
 
-	// ⚠️ 任一部门失败就放弃整轮：快照整份替换，少一个部门 = 静默把那批人踢出 OIDC
+	// ⚠️ 任一部门失败就放弃整轮：每轮整份替换，少一个部门 = 静默把那批人标成离开、踢出 OIDC
 	const membersByDept: FetchedOrg["membersByDept"] = [];
 	for (const dept of departments) {
 		membersByDept.push({

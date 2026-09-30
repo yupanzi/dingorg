@@ -13,7 +13,7 @@ const logging = {
 	LOG_LEVEL: z.enum(LOG_LEVELS).default("info"),
 };
 
-// 自有钉钉应用：扫码登录、拉组织快照（OIDC 准入查的就是它）
+// 自有钉钉应用：扫码登录、同步组织架构（OIDC 准入查的就是它）
 const dingtalkApp = {
 	DINGTALK_APP_KEY: z.string().min(1),
 	DINGTALK_APP_SECRET: z.string().min(1),
@@ -32,7 +32,7 @@ const DEV_PUBLIC_ORIGIN = `http://localhost:${LISTEN_PORT}`;
 export const taskEnvSchema = z.object({ ...logging, ...database });
 export type TaskEnv = z.infer<typeof taskEnvSchema>;
 
-/** orgsync：直接调快照刷新（与 `POST /api/v1/sync` 同一份实现），要库与钉钉凭证 */
+/** orgsync：直接调组织同步（与 `POST /api/v1/sync` 同一份实现），要库与钉钉凭证 */
 export const orgSyncEnvSchema = z.object({
 	...logging,
 	...database,

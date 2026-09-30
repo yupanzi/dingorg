@@ -177,7 +177,7 @@ describe("parseJobLevel", () => {
 		expect(parseJobLevel('{"职务":"  "}')).toBeNull();
 	});
 
-	// 跑在快照组装的成员循环里：抛出去就是一个人的脏数据让整轮拉取失败
+	// 跑在同步组装的成员循环里：抛出去就是一个人的脏数据让整轮拉取失败
 	it("非法 JSON 返回 null 而不是抛出", () => {
 		expect(parseJobLevel("{不是 JSON")).toBeNull();
 		expect(parseJobLevel("null")).toBeNull();

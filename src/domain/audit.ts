@@ -6,7 +6,7 @@ export const AUDIT_STATUSES = ["success", "failure"] as const;
  * - `api_key`：调 REST 面的 API key，actorId 是 key 的 id（鉴权失败时记来件声称的那个，
  *   格式不对为空），actorName 是 key 的 name（只在鉴权通过时有）
  * - `dingtalk`：扫码登录的人，actorId 是 unionId；身份确定之前被拒的为空
- * - `system`：orgsync 的定时刷新，actorId 为空；也是列默认值
+ * - `system`：orgsync 的定时同步，actorId 为空；也是列默认值
  *
  * ⚠️ 只加不删：删值要重建 PG 枚举，不再写入的值也留着。
  */

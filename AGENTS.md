@@ -5,8 +5,8 @@
 
 ## 边界
 
-两件事：**钉钉认证 → 标准 OIDC**（node-oidc-provider），**组织架构快照 → REST 出口**
-（调用方出示 API key，读自有应用那一份快照；钉钉凭证只在服务端）。
+两件事：**钉钉认证 → 标准 OIDC**（node-oidc-provider），**钉钉组织架构 → 同步镜像 → REST 出口**
+（调用方出示 API key，读自有应用那一份组织同步；钉钉凭证只在服务端）。
 外部依赖只有 Postgres，下游是 authentik。以下刻意不存在，别加回来：
 
 - 应用门户、应用角色、`roles` claim、「谁能用哪个应用」的授权、分组管理 —— 下游的活
@@ -14,13 +14,13 @@
 - REST 面认 OIDC client 或调用方的钉钉应用凭证 —— REST 只认 `AUTH_JSON` 里的 apikey 项
 - 管理界面
 
-**准入判据只有一条：在自有应用（`DINGTALK_APP_KEY`）的组织快照里。**
+**准入判据只有一条：是自有应用（`DINGTALK_APP_KEY`）组织同步结果里的当前成员。**
 
 ## 地图
 
 ```
 src/
-├── server.ts        常驻进程入口（自己不刷新任何快照）
+├── server.ts        常驻进程入口（自己不发起组织同步）
 ├── app.ts           fastify 组装（集成测试调的就是它）
 ├── env.ts           环境变量（常驻服务 / DB 任务 / orgsync 三个子集）
 ├── deps.ts          db（单池）
@@ -28,11 +28,12 @@ src/
 ├── resources.ts     advisory lock 键 · app_secrets 键 · 审计动作串
 ├── db/              连接池工厂 · schema/
 ├── domain/          纯逻辑、无 IO：oidc-client · api-key · config-json · org-api
-│                    · org-snapshot · org-identity · org-title · sync · audit
+│                    · org-sync · org-identity · org-title · sync · audit
 ├── oidc/            provider · adapter · account（准入）· keys · mount · new-client
 ├── interaction/     钉钉扫码交互（唯一调钉钉用户级 OAuth 的地方）
 ├── dingtalk/        client · access-token（自有应用）· fetch-org（只读钉钉）
-├── sync/            snapshot（读 / 刷新 / findMember）
+├── sync/            org（编排：租约 · 单飞 · 冷却）· store（全部 SQL · findMember）
+│                    · testing（集成测试共用，不进镜像）
 ├── api/             REST 面：guard（鉴权 + 审计 + 错误翻译）· org · sync
 ├── auth/            API key：Bearer 解析 · 校验 · new-api-key
 ├── audit/           审计写入
@@ -53,15 +54,15 @@ scripts/             release-version（发版时把版本写回 package.json 与
 ### 身份
 
 - **`sub` = 钉钉 unionId，别换**：userid 离职重入职会变，换锚点 = 所有下游的用户数据错位。
-- ⚠️ **准入只查自有 appKey 的快照**，`oidc/account.ts` 与 interaction 回调用同一条判据。
-  `org_snapshots` 里可能留着别的 appKey 的行（换过 `DINGTALK_APP_KEY`），判松了是静默的；
-  两处不一致是扫码死循环。
-- **登录不自动建用户**，快照里查不到就回我们自己的 403 页。
+- ⚠️ **准入只认自有应用同步结果里的当前成员**（`sync/store.ts` 的 `findMember`），`oidc/account.ts`
+  与 interaction 回调用同一条判据。同步状态行的 `app_key` 可能还是别的应用（换过 `DINGTALK_APP_KEY`
+  还没同步过），判松了是静默的；两处不一致是扫码死循环。
+- **登录不自动建用户**，同步结果里查不到（含已离开的）就回我们自己的 403 页。
 - **unionId 缺失 = 登录不了**：钉钉「个人信息」权限点没开时它静默缺失。
 - ⚠️ **email 只取 `org_email`**（它以 `email_verified: true` 发出去）：别加回钉钉的 `email`
   字段，也别按姓名拼域名。没有企业邮箱的人 `email` 与 `email_verified` 都不出现。
 - **email 与 userName 的归一化只在 `domain/org-identity.ts`**；撞名规则是
-  `domain/org-snapshot.ts` 的 `pickOwner`（原持有者优先）。
+  `domain/org-sync.ts` 的 `pickOwner`（原持有者 = 上一轮的当前成员，已离开的不算）。
 - **拉取用 `topapi/v2/user/list`，别退回 listsimple**（没有 unionid / org_email）。
 - **钉钉用户级 OAuth 的非标准细节只在 interaction 层**，下游一律走标准 OIDC。
 
@@ -122,7 +123,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
   约束。Secret 的读权限按此收紧。
 - **校验不外呼、不限流**：key 含 256 位随机。比对在 `auth/api-key.ts`（按 id 取项，配置里的 key
   启动时哈希一次，`timingSafeEqual` 比哈希）。挂在请求上的调用方只有 id 与 name。
-- ⚠️ **每把 key 读的都是同一份全组织快照**，不按调用方划范围。
+- ⚠️ **每把 key 读的都是同一份全组织数据**，不按调用方划范围。
+- **只列当前成员**：已离开的行只留在库里，别在 REST 面暴露（契约里没有 `left_at`）。
 - **鉴权失败一律 401、不说原因；鉴权之后的钉钉失败要讲原因**（502 / 503 / 504），翻译在
   `api/guard.ts` 作用域的 `setErrorHandler`，路由里不 try/catch。
 - **guard 必须包在 `app.register` 作用域里**，否则跑遍 `/healthz` 与 `/oidc/*`。
@@ -131,33 +133,50 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - ⚠️ **判定别用 `email` / `dingtalk.orgEmail`**：覆盖率约五成、可为 null。身份走 `userName`，
   永不变的是 `unionid`。
 - ⚠️ **`extension` 原样透传，字段集合由钉钉后台管理员定义**：要收口就在
-  `domain/org-snapshot.ts` 的 `toUser` 加允许键白名单。
+  `domain/org-sync.ts` 的 `toUser` 加允许键白名单。
 - **`GET /api/v1` 自描述端点：加端点要来补一行**，漏了没有检查会红。
 
-### 组织快照（`sync/`）
+### 组织同步（`sync/`）
 
-- **一个 appKey 一行、整份替换，只写自有 appKey 那一行**。别加回锁、水位线、独立连接池。
-- **并发刷新靠 `fetched_at` 条件写；失败不动 `data`**（清掉自有快照 = 全员登录失败）。
-- **刷新只有一份实现 `refreshSnapshot`，两个入口**：`POST /api/v1/sync`（API key 调用方）与
-  orgsync（直接调，不经 HTTP、不要凭证，审计 actor 是 `system`）。冷却、失败记录都在函数里，
-  别在入口里另写；审计说法共用 `domain/sync.ts` 的 `SYNC_TRIGGER_SUMMARY`。常驻进程自己不定时刷新。
+- **一行同步状态（`org_sync`，`id` 恒为 1）+ 三张镜像表（部门 / 成员 / 成员-部门），每轮一个事务
+  整体换新**。只有一份同步，别加回按 appKey 分行。表上的规则在 `db/schema/org.ts` 文件头。
+- ⚠️ **`app_key` / `fetched_at` 只在成功写入的事务里改**，抢租约与记失败只动 `lease_*` /
+  `attempted_at` / `error`：否则一次失败就能把别的应用的名单标成自有的。写入时发现 `app_key` 不是
+  自己（或从没成功过）就硬删镜像表，含已离开的行。
+- ⚠️ **懒加载（`getOrSyncOrg`）不接管别的应用的数据**，只抛 `other_app`：滚动更新换 key 时新旧 Pod
+  会来回覆盖对方的名单。接管只走显式同步（orgsync、部署 hook、POST）。
+- **跨副本靠租约**：`claimSync` 一条条件 upsert，同时判「租约空闲或过期」与「冷却已过」。别换成
+  advisory lock：会话锁要一直占着连接，单池依赖拉取期间不占连接。租约过期后万一两个在拉，写事务
+  先 `FOR UPDATE` 锁状态行再比 `fetched_at`，旧的写不过新的。只释放自己的租约。进程内另有单飞。
+- **时刻一律取 DB 时钟**：租约与「谁更晚开始」要跨副本比先后。
+- **冷却 60 秒，从上一次尝试（成功或失败）的结束时刻算**。
+- **钉钉 token 在 `doSync` 里、抢到租约之后、`try` 之内申请**：冷却期内与别处在拉时都不申请；token
+  失败（secret 错、钉钉故障）同样进 `error`、回 502，别挪回 guard（那会变成不说原因的 401）。
+- **钉钉拉取在事务外，事务里只用 `tx`**；失败时回滚之后再用 `db` 记失败。⚠️ 失败不动镜像表
+  （清掉自有数据 = 全员登录失败）。
+- **离开 = 最近一轮里不在了**（离职、移出可见范围、撞名被跳过都算）：成员软删除，`left_at` 非空、
+  整行保留为最后所见，同一 userid 回来就清掉；部门与成员-部门关系只含当前的。⚠️ 先标离开再 upsert
+  （重入职是新 userid、同一个 unionid，否则撞唯一索引）；`user_name` 别加唯一约束（理由在 schema）。
+- ⚠️ **已离开的行含 PII**（企业邮箱、`extension` 可能有手机号），现在不清理；要限期清理就加进 oidcpurge。
+- **同步只有一份实现 `syncOrg`，两个入口**：`POST /api/v1/sync`（API key 调用方）与 orgsync（直接调，
+  不经 HTTP、不要凭证，审计 actor 是 `system`）。租约、冷却、失败记录都在函数里，别在入口里另写；审计
+  说法共用 `domain/sync.ts` 的 `SYNC_TRIGGER_SUMMARY`。常驻进程自己不定时同步。
   ⚠️ 空库时谁都登录不进来：部署 hook（`syncOnDeploy`）会跑一次，本地是 `pnpm orgsync`。
-- **钉钉 token 在 `doRefresh` 里、冷却判断之后、`try` 之内申请**：冷却期内不申请；token 失败
-  （secret 错、钉钉故障）同样进 `error`、回 502，别挪回 guard（那会变成不说原因的 401）。
-- **读路径不外呼**，从没成功过才当场拉一次。刷新有单飞 + 60 秒冷却，⚠️ 冷却从上一次**尝试**
-  的**结束**时刻算。
+- **读路径不外呼**，从没成功过才当场同步一次；别处持着租约时不等它（有数据报 `busy`，没数据 503）。
+  读成员 / 部门走一个 REPEATABLE READ 只读事务：状态行与镜像表分几条语句读，要落在同一个 MVCC 快照里。
 - **申请 token、拉取、组装、写库哪步失败都记进 `error`**，只存 `describeFailure` 过的说法（会回给调用方）。
-- ⚠️ **`fetchOrg` 任一部门失败就放弃整轮**，别加「跳过失败部门」：少一个部门 = 静默踢人。
-- **orgsync 的重试间隔必须长于冷却；返回不等于成功**：冷却期内拿到的是现有快照，它挂着
-  `error` 就算这一轮失败。它挂了是静默的，Job 失败要配告警。
+- ⚠️ **`fetchOrg` 任一部门失败就放弃整轮**，别加「跳过失败部门」：少一个部门 = 静默把那批人标成离开。
+- **orgsync 的重试间隔必须长于冷却；返回不等于成功**：冷却期内拿到的是现有数据，它挂着 `error` 就算
+  这一轮失败。撞上别处在同步就轮询状态等它结束（不写审计），不计入尝试次数。它挂了是静默的，Job
+  失败要配告警。
 - **别往 `buildApp` 里加启动即外呼的逻辑**：集成测试会拿假凭证去真打钉钉。
 
 ### 钉钉出口（`dingtalk/`）
 
 - **企业 token 是自有应用的惰性 cache-aside**，`dingtalk/access-token.ts` 文件头列了四个
   不可省的细节。
-- ⚠️ **`invalidateAccessToken` 唯一的生产调用方在 `sync/snapshot.ts`**，哨兵只有
-  `snapshot.integration.test.ts` 一条。删模块时顺着被删代码的调用列表反查。
+- ⚠️ **`invalidateAccessToken` 唯一的生产调用方在 `sync/org.ts`**，哨兵只有
+  `sync/org.integration.test.ts` 一条。删模块时顺着被删代码的调用列表反查。
 - **`DingtalkError` 的 `code` / `status` 是结构化字段**。判 token 失效别匹配 `AccessToken` 字样。
 - **所有出口 30 秒超时。`healthz` 只探 DB、不探钉钉。**
 
@@ -182,7 +201,7 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **actor / target 是快照、不建外键**，写入时就必须拿对。
 - ⚠️ **`actor_type` 是 PG 枚举，只加不删**：`api_key` 是 REST 调用方，`system` 是 orgsync。新代码先于
   迁移上线时，写不进的审计是静默丢失的（本地升级后先 `pnpm migrate`）。
-- **`request_id` 是 fastify 的 reqId**，进程内自增、跨副本会重复。快照刷新的日志
+- **`request_id` 是 fastify 的 reqId**，进程内自增、跨副本会重复。组织同步的日志
   走请求的 logger 才带得上它。
 
 ### 日志（`log.ts`）
@@ -208,14 +227,16 @@ scripts/             release-version（发版时把版本写回 package.json 与
   `env.ts` 的 `taskEnvSchema` / `orgSyncEnvSchema` 对齐，别换回 `envFrom`。
 - **CronJob 的 `backoffLimit` 每个显式给**：orgsync 0（进程内重试），oidcpurge 2。任务 Job 共用
   `_helpers.tpl` 的 `dingorg.taskJobSpec`，其中 `podFailurePolicy` 让驱逐等中断不计入（k8s ≥ 1.26）。
-- **每次 install / upgrade 后 hook 跑一次 orgsync**：首次部署与升级后的快照都靠它（hook 用新镜像
-  直接刷新，不依赖常驻 Pod 滚完）；它失败会让 release 标成失败。
+- **每次 install / upgrade 后 hook 跑一次 orgsync**：首次部署与升级后的组织数据都靠它（hook 用新镜像
+  直接同步，不依赖常驻 Pod 滚完）；它失败会让 release 标成失败。与 cron 或 POST 撞上时由租约排队。
+- ⚠️ **换 `DINGTALK_APP_KEY` 后要显式同步一次**（懒加载不接管别的应用的数据）：upgrade 有 hook；
+  `helm rollback` 回到旧 key 时没有 hook，要手动 `kubectl create job --from=cronjob/<release>-orgsync`。
 - ⚠️ **改了 Secret 必须 bump `values.secretVersion`**。
 - **`PUBLIC_ORIGIN` 由 chart 从 `ingress.host` 派生**。
 - **端口固定 3080，不做成可配**：`env.ts` 的 `LISTEN_PORT`、Dockerfile、chart 的 `server.yaml`
   三处同一个数。
 - **orgsync 拿库与钉钉凭证，不拿 `AUTH_JSON`**；`AUTH_JSON` 里可以没有 apikey 项（= 不开 REST 面）。
-- **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与快照刷新。
+- **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与组织同步。
 - **deploy 不进 CI。写完 Dockerfile 一定 `docker run` 一次。**
 
 ## 版本与发布
@@ -244,6 +265,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - ⚠️ **pgEnum 的类型名必须带 `dingorg_` 前缀**；`casing: "snake_case"` 在 `drizzle.config.ts`
   与 `db/index.ts` 两处一致。
 - **domain 不依赖 IO 层**。⚠️ 给 `DeptUser` 加字段却忘了加进 `MemberFields` 不是类型错误。
+- **给 `OrgApiUser` 加字段 = `db/schema/org.ts` 加列 + `sync/store.ts` 的 `toRow` / `fromRow`**：
+  `toRow` 漏了是类型错误，`fromRow` 漏了的哨兵是 `store.integration.test.ts` 的读写往返用例。
 - **新增环境变量**：`src/env.ts` + `.env.example`；非敏感的再加进 `values.yaml`，敏感的进 Secret。
 - **相对 import 不写 `.js`；JSON / tsconfig 里只用行注释。**
 - **`pnpm-workspace.yaml` 的 `allowBuilds: esbuild` 不能删。**
@@ -256,20 +279,28 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
 ```
 
 - **集成测试无 `DATABASE_URL` 时静默跳过**；`vitest.config.ts` 的 `loadEnvFile` 那一行不能删。
-- **哨兵**：快照 `sync/snapshot.integration.test.ts` · token `dingtalk/access-token.integration.test.ts`
+- **测试文件串行跑（`fileParallelism: false`）**：组织同步的表全库一份。⚠️ 跑完本地的组织数据被清空，
+  要重新 `pnpm orgsync`。
+- **哨兵**：组织同步 `sync/org.integration.test.ts`（编排）、`sync/store.integration.test.ts`（租约、
+  软删除、读写往返） · token `dingtalk/access-token.integration.test.ts`
   · API key `auth/api-key.test.ts`、`domain/api-key.test.ts` · OIDC 契约与 REST 面
   `app.integration.test.ts` · 凭证配置 `domain/config-json.test.ts`、`domain/oidc-client.test.ts`、
   `env.test.ts`、`oidc/new-client.test.ts` · 脱敏 `log.test.ts`
   · 职级 `domain/org-title.test.ts`。
-- **准入必跑 `oidc/account.integration.test.ts`**，「只出现在别的应用快照里的人拒绝」那条不能删。
+- **准入必跑 `oidc/account.integration.test.ts`**，「状态行属于别的应用时一律拒绝」与「已离开的人拒绝」
+  两条不能删。
 - **手测**：
   - REST：无凭证 / 错 key / OIDC client 凭证 / 钉钉 AppKey:AppSecret 都 401 且不说原因；
     审计里 grep 不到 key，`actor_type` 是 `api_key`。
   - OIDC 全链路（真实钉钉凭证）：authorize → 扫码 → token → userinfo；没有企业邮箱的人没有
-    `email` / `email_verified`；不在自有快照里的人看到 403 页。
-  - 职级：清空某人职位 → 刷新 → 职级变空；部门改名 → 刷新 → 主管标记跟着新名字走。
-  - 刷新：服务重启后日志里没有快照刷新；`pnpm orgsync` 成功且审计多一条 `sync.trigger`（actor
-    `system`），60 秒内再跑也是 exit 0；`DATABASE_URL` 指向空端口 → 共 3 次尝试后 exit 1。
+    `email` / `email_verified`；不在自有同步结果里（含已离开）的人看到 403 页。
+  - 职级：清空某人职位 → 同步 → 职级变空；部门改名 → 同步 → 主管标记跟着新名字走。
+  - 同步：服务重启后日志里没有同步；`pnpm orgsync` 成功且审计多一条 `sync.trigger`（actor
+    `system`），60 秒内再跑也是 exit 0；两个 `pnpm orgsync` 同时跑只有一个外呼，另一个报「另一处正在
+    同步」、等完 exit 0；`DATABASE_URL` 指向空端口 → 共 3 次尝试后 exit 1。
+  - 离开：钉钉里移除一个人 → 同步 → 他的 `left_at` 有值、`/org/users` 里没有他、扫码看到 403 页。
+  - 换应用：`DINGTALK_APP_KEY` 换成假值启动 → `GET /org/users` 回 503 `not_synced`、不外呼，库里
+    原应用的数据不动。
   - 日志：带 `?code=xxx` 访问扫码回调，日志里 grep 不到 `xxx`；healthz 不出现；
     `LOG_LEVEL=verbose` 启动是一行 fatal JSON、exit 1。
   - chart：`helm lint charts/dingorg -f charts/dingorg/values.example.yaml`；`helm template` 看两个

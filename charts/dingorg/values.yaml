@@ -26,7 +26,7 @@ env:
   LOG_LEVEL: ''
 
 server:
-  # 无状态（会话与快照都在 PG），可水平扩
+  # 无状态（会话与组织数据都在 PG），可水平扩；组织同步靠 PG 里的租约，多副本同一时刻只有一个在拉钉钉
   replicas: 2
   resources:
     requests: { cpu: 100m, memory: 256Mi }
@@ -41,16 +41,16 @@ cronjobs:
     secretKeys: [DATABASE_URL]
     backoffLimit: 2
   orgsync:
-    # ⚠️ 自有快照的每日刷新，删了它离职的人一直能登录。
+    # ⚠️ 自有应用组织数据的每日同步，删了它离职的人一直能登录。与部署 hook 撞上时由租约排队。
     # UTC 04:00 = 北京时间 12:00
     schedule: '0 4 * * *'
-    # 直接调刷新（不经 HTTP），所以要库与钉钉凭证，不要任何 API key
+    # 直接调同步（不经 HTTP），所以要库与钉钉凭证，不要任何 API key
     secretKeys: [DATABASE_URL, DINGTALK_APP_KEY, DINGTALK_APP_SECRET]
-    # 失败由进程内重试（间隔长于刷新冷却），Job 层不再重试；驱逐等中断不计入
+    # 失败由进程内重试（间隔长于同步冷却），Job 层不再重试；驱逐等中断不计入
     backoffLimit: 0
 
 # 每次 install / upgrade 后跑一次 orgsync（post-install/post-upgrade hook）：首次部署不用手动
-# 触发，升级后快照立即按新代码重建（hook 用的就是新镜像，不依赖常驻 Pod 滚完）。
+# 触发，升级后组织数据立即按新代码重建（hook 用的就是新镜像，不依赖常驻 Pod 滚完）。
 # 它失败会让这次 release 标成失败。
 syncOnDeploy: true
 

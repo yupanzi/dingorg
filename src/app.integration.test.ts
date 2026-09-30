@@ -5,7 +5,7 @@ import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { newApiKey } from "~/auth/new-api-key";
-import { appSecrets, auditLogs, orgSnapshots } from "~/db/schema";
+import { appSecrets, auditLogs } from "~/db/schema";
 import { invalidateAccessToken } from "~/dingtalk/access-token";
 import {
 	type DingtalkCredentials,
@@ -15,9 +15,11 @@ import {
 import { fetchOrg } from "~/dingtalk/fetch-org";
 import { apiKeyEntryId } from "~/domain/api-key";
 import { CLIENT_SCOPE } from "~/domain/oidc-client";
+import { SYNC_TRIGGER_SUMMARY } from "~/domain/sync";
 import { type IdpEnv, parseEnv } from "~/env";
 import { createOidcProvider } from "~/oidc/provider";
 import { AUDIT_ACTIONS, accessTokenKey } from "~/resources";
+import { ageOrgSync, holdLease, resetOrgSync } from "~/sync/testing";
 
 import { buildApp } from "./app";
 import { closeDeps, createDeps, type Deps } from "./deps";
@@ -397,7 +399,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		expect(res.statusCode).toBe(404);
 	});
 
-	describe("REST 面（API key + 自有快照）", () => {
+	describe("REST 面（API key + 自有应用的组织同步）", () => {
 		const basic = (id: string, secret: string) =>
 			`Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`;
 		const bearer = (key: string) => `Bearer ${key}`;
@@ -423,13 +425,11 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 				},
 			});
 
-		// 回到「从没拉过」：删自有快照（冷却跟着清掉）与 token 的两级缓存
-		async function resetOwnSnapshot() {
+		// 回到「从没同步过」：清空组织同步（冷却、租约跟着清掉）与 token 的两级缓存
+		async function resetOwnSync() {
 			tokenError = null;
 			orgFailure = null;
-			await deps.db
-				.delete(orgSnapshots)
-				.where(eq(orgSnapshots.appKey, DINGTALK_APP_KEY));
+			await resetOrgSync(deps.db);
 			await deps.db
 				.delete(appSecrets)
 				.where(eq(appSecrets.key, accessTokenKey(DINGTALK_APP_KEY)));
@@ -438,7 +438,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		}
 
 		async function cleanup() {
-			await resetOwnSnapshot();
+			await resetOwnSync();
 			await deps.db.delete(auditLogs).where(eq(auditLogs.userAgent, UA));
 		}
 
@@ -498,8 +498,8 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			});
 		});
 
-		it("每把 key 都读到自有快照，响应带 fetchedAt，审计记 key 的 id 与 name", async () => {
-			await resetOwnSnapshot();
+		it("每把 key 都读到自有应用的组织数据，响应带 fetchedAt，审计记 key 的 id 与 name", async () => {
+			await resetOwnSync();
 			for (const { key } of [KEY_HR, KEY_BI]) {
 				const res = await call("GET", "/api/v1/org/users", bearer(key));
 
@@ -534,18 +534,22 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			});
 		});
 
-		it("GET /api/v1/sync 报自有快照的状态，不暴露钉钉 AppKey", async () => {
+		it("GET /api/v1/sync 报自有应用的同步状态，不暴露钉钉 AppKey", async () => {
 			const res = await call("GET", "/api/v1/sync", AS_REST);
 
 			expect(res.statusCode).toBe(200);
-			expect(res.json()).toMatchObject({ state: "ok", userCount: 1 });
+			expect(res.json()).toMatchObject({
+				state: "ok",
+				syncing: false,
+				userCount: 1,
+			});
 			expect(res.json()).not.toHaveProperty("appKey");
 			expect(res.body).not.toContain(DINGTALK_APP_KEY);
 		});
 
 		// 下面两条是 guard 错误翻译仅有的哨兵
 		it("钉钉报错 → 502 且带 errcode；状态端点讲原因", async () => {
-			await resetOwnSnapshot();
+			await resetOwnSync();
 			orgFailure = "ip-blocked";
 			const res = await call("GET", "/api/v1/org/users", AS_REST);
 
@@ -565,7 +569,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			expect(res.statusCode).toBe(503);
 			expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
 			expect(res.json()).toMatchObject({
-				error: { code: "snapshot_unavailable" },
+				error: { code: "not_synced" },
 			});
 			expect(res.body).toContain("60020");
 			expect(vi.mocked(fetchOrg).mock.calls.length).toBe(calls);
@@ -573,7 +577,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 
 		// 自有凭证在服务端：它的 token 失败是服务端的故障，不是调用方的 401
 		it("钉钉 token 申请失败 → 502 而不是 401，原因进状态端点", async () => {
-			await resetOwnSnapshot();
+			await resetOwnSync();
 			tokenError = new DingtalkError("应用凭证无效", { errcode: 40089 });
 			const res = await call("POST", "/api/v1/sync", AS_REST);
 
@@ -587,7 +591,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		});
 
 		it("非钉钉的错 → 500 不回显 message，失败照样进审计；状态端点也不回显", async () => {
-			await resetOwnSnapshot();
+			await resetOwnSync();
 			orgFailure = "internal";
 			const res = await call("POST", "/api/v1/sync", AS_REST);
 
@@ -611,7 +615,7 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 					expect.objectContaining({
 						status: "failure",
 						targetId: DINGTALK_APP_KEY,
-						details: { summary: "刷新组织快照失败" },
+						details: { summary: SYNC_TRIGGER_SUMMARY.failed },
 					}),
 				);
 			});
@@ -622,6 +626,45 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 				error: "内部错误",
 			});
 			expect(status.body).not.toContain("secret_table");
+		});
+
+		// 跨副本的租约：别处在拉时这里不外呼
+		it("别处正在同步、又从没同步过 → 503 + Retry-After，不外呼", async () => {
+			await resetOwnSync();
+			await holdLease(deps.db, DINGTALK_APP_KEY, 60_000);
+			const calls = vi.mocked(fetchOrg).mock.calls.length;
+
+			const res = await call("GET", "/api/v1/org/users", AS_REST);
+
+			expect(res.statusCode).toBe(503);
+			expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
+			expect(res.json()).toMatchObject({ error: { code: "not_synced" } });
+			expect(vi.mocked(fetchOrg).mock.calls.length).toBe(calls);
+			expect((await call("GET", "/api/v1/sync", AS_REST)).json()).toMatchObject(
+				{ state: "never", syncing: true },
+			);
+		});
+
+		it("有数据时撞上别处正在同步：POST 立即返回 refreshed:false、syncing:true", async () => {
+			await resetOwnSync();
+			expect((await call("POST", "/api/v1/sync", AS_REST)).statusCode).toBe(
+				200,
+			);
+			// 冷却过了、租约在别人手里
+			await ageOrgSync(deps.db, 2 * 60_000);
+			await holdLease(deps.db, DINGTALK_APP_KEY, 60_000);
+			const calls = vi.mocked(fetchOrg).mock.calls.length;
+
+			const res = await call("POST", "/api/v1/sync", AS_REST);
+
+			expect(res.statusCode).toBe(200);
+			expect(res.json()).toMatchObject({
+				refreshed: false,
+				syncing: true,
+				state: "ok",
+			});
+			expect(vi.mocked(fetchOrg).mock.calls.length).toBe(calls);
+			await resetOwnSync();
 		});
 	});
 });

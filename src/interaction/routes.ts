@@ -3,7 +3,7 @@ import type Provider from "oidc-provider";
 import { type AuditEntry, recordAudit } from "~/audit/record";
 import { pickAuthEntries } from "~/domain/config-json";
 import { AUDIT_ACTIONS } from "~/resources";
-import { findMember } from "~/sync/snapshot";
+import { findMember } from "~/sync/store";
 import type { Deps } from "../deps";
 import { getContactUser, getUserAccessToken } from "../dingtalk/client";
 import { type IdpEnv, ownDingtalkApp } from "../env";
@@ -163,10 +163,10 @@ export function registerInteractionRoutes(
 				);
 			}
 
-			// ⚠️ 与 `~/oidc/account` 同一条判据：只查自有应用的快照
+			// ⚠️ 与 `~/oidc/account` 同一条判据：自有应用同步结果里的当前成员
 			const member = await findMember(deps.db, env.DINGTALK_APP_KEY, unionId);
 
-			// 不自动建用户。快照里只有当前可见的人，「已离职」与「从来不在」分不开
+			// 不自动建用户。已离开的与从来不在的都拒，文案不区分
 			if (!member) {
 				return deny(
 					"不在组织通讯录的账号尝试登录（或已离职）",

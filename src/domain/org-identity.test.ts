@@ -62,7 +62,7 @@ describe("normalizeIdentity", () => {
 	it("完全无法归一化时返回 null，而不是造一个假身份", () => {
 		expect(normalizeIdentity({ name: "" })).toBeNull();
 		expect(normalizeIdentity({ name: "(只有备注)" })).toBeNull();
-		// 钉钉返回缺 name 的条目：跳过这个人，不能抛错拖垮整轮快照
+		// 钉钉返回缺 name 的条目：跳过这个人，不能抛错拖垮整轮同步
 		expect(
 			normalizeIdentity({ name: undefined as unknown as string }),
 		).toBeNull();
