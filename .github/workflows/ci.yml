@@ -36,8 +36,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:ci@localhost:5432/dingorg
     steps:
       - uses: actions/checkout@v4
-      # 必须先于 setup-node（cache: pnpm 要找到可执行文件）；版本读 packageManager
-      - uses: pnpm/action-setup@v4
+      # 必须先于 setup-node（cache: pnpm 要找到可执行文件）；版本读 packageManager。
+      # pnpm 12 要 6.1.0 起（更早的跳过它的 postinstall，跑到的是占位脚本）；钉确切版本，
+      # 浮动的 @v6 不保证跟上
+      - uses: pnpm/action-setup@v6.1.0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -88,7 +90,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

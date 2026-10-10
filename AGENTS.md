@@ -270,6 +270,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **新增环境变量**：`src/env.ts` + `.env.example`；非敏感的再加进 `values.yaml`，敏感的进 Secret。
 - **相对 import 不写 `.js`；JSON / tsconfig 里只用行注释。**
 - **`pnpm-workspace.yaml` 的 `allowBuilds: esbuild` 不能删。**
+- **升 pnpm 用 `corepack use pnpm@<版本>`**：它同时改 `packageManager` 与锁文件开头记 pnpm 自身
+  版本的那段，只改前者 CI 的 frozen install 失败。跨大版本时看一眼 `ci.yml` 的 `pnpm/action-setup`。
 
 ## 验证
 

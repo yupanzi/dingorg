@@ -15,7 +15,7 @@ RUN corepack enable
 WORKDIR /app
 
 # ---------- 生产依赖 ----------
-# pnpm-workspace.yaml 必须拷：pnpm 11 的配置在里面，缺了 build 阶段的 install 失败
+# pnpm-workspace.yaml 必须拷：pnpm 的配置在里面，缺了 build 阶段的 install 失败
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
