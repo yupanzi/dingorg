@@ -43,7 +43,7 @@ src/
 drizzle/             迁移
 charts/dingorg/      Helm：Deployment + CronJob + migrate Job + 部署后的 orgsync hook
 Dockerfile           一个镜像、多入口
-.releaserc.json      发版：版本号 · CHANGELOG · tag · GitHub Release · 推镜像（CI 的 release job 跑）
+.releaserc.json      发版：版本号 · CHANGELOG · tag · GitHub Release · 推镜像与 chart（CI 的 release job 跑）
 scripts/             release-version（发版时把版本写回 package.json 与 Chart.yaml）
 ```
 
@@ -242,14 +242,15 @@ scripts/             release-version（发版时把版本写回 package.json 与
 ## 版本与发布
 
 - **版本号只由 semantic-release 出**（`ci.yml` 的 release job，push 到 master 且 check 过了才跑）：
-  别手改 `package.json` / `Chart.yaml` 的版本号，别手打 tag、手推镜像。
+  别手改 `package.json` / `Chart.yaml` 的版本号，别手打 tag、手推镜像或 chart。
 - ⚠️ **提交信息就是发版开关**：`feat` → minor，`fix` / `perf` → patch，type 后加 `!` 或脚注
   `BREAKING CHANGE:` → major，其余 type 不发版。commitlint 在 commit-msg 钩子里卡，模板 `.gitmessage`。
 - ⚠️ **preset 是 `conventionalcommits`，别删回默认**：默认的 angular 不认 `feat!:`，破坏性变更会被
   当成不发版。`conventional-changelog-conventionalcommits` 钉在 9.x：10 要 writer@9，semantic-release
   自带的 notes-generator 还是 writer@8，渲染发版说明时报错。升 semantic-release 时一起看。
-- **镜像 tag = 版本号 + `latest`**，在 `.releaserc.json` 的 `publishCmd` 里推（理由在 `ci.yml`）。
-  PR 上只验证能构建，不推。
+- ⚠️ **镜像 tag = 版本号 + `latest`，chart 以 OCI 推到 `ghcr.io/<owner>/charts/dingorg`**，都在
+  `.releaserc.json` 的 `publishCmd` 里、chart 排在镜像之后；chart 路径别改成 owner 根，先后也别换
+  （理由在 `ci.yml`）。PR 上只验证能构建，不推。
 - **Chart 的 `version` / `appVersion` 跟着发版走，`image.tag` 留空即 appVersion**（`_helpers.tpl`
   的 `dingorg.image`，五类 Pod 共用）。写回在 `scripts/release-version.mjs`，Chart.yaml 的格式变了
   它报错而不是空转。

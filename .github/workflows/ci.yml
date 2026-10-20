@@ -1,6 +1,6 @@
 # check：lint + 类型 + 测试（含需要真实 Postgres 的集成测试）。
 # build：只在 PR 上验证镜像能构建，不推。
-# release：push 到默认分支、check 过了才跑，版本号与镜像都由它出。deploy 不进 CI（不放集群凭证）。
+# release：push 到默认分支、check 过了才跑，版本号、镜像与 chart 都由它出。deploy 不进 CI（不放集群凭证）。
 name: ci
 
 on:
@@ -73,8 +73,10 @@ jobs:
           cache-to: type=gha,mode=max
 
   # semantic-release 按 Conventional Commits 算版本（.releaserc.json），只有 feat / fix / perf /
-  # BREAKING 才发版，其余提交这一步空转。镜像在它的 publishCmd 里推，别拆成「打 tag 触发另一个
+  # BREAKING 才发版，其余提交这一步空转。镜像与 chart 在它的 publishCmd 里推，别拆成「打 tag 触发另一个
   # workflow」：GITHUB_TOKEN 打的 tag 不触发 workflow，那条链默认是断的。
+  # publishCmd 先推镜像再推 chart：chart 一出现在 OCI 源里（Kite 等）就可能被装，它 appVersion 指的
+  # 镜像 tag 得已经在。
   release:
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     needs: check
@@ -98,14 +100,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - uses: docker/setup-buildx-action@v3
+      # helm push 也用这份凭证（Helm 读不到自己的就回落读 Docker 的），别再加 helm registry login
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # publishCmd 从 $IMAGE 取镜像坐标；GHCR 只接受小写路径
-      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      # publishCmd 从这两个变量取坐标；GHCR 只接受小写路径。
+      # ⚠️ CHART_REPO 别改成 owner 根：helm push 拿 chart 名当最后一段，会与镜像同路径，
+      # 同版本号的 tag 被 chart 盖掉，Pod 拉不到镜像
+      - run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "CHART_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_ENV"
 
       - run: pnpm exec semantic-release
         env:

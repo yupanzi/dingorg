@@ -11,7 +11,7 @@
 			"@semantic-release/exec",
 			{
 				"prepareCmd": "node scripts/release-version.mjs ${nextRelease.version} && pnpm exec biome format --write package.json",
-				"publishCmd": "docker buildx build -t \"$IMAGE:${nextRelease.version}\" -t \"$IMAGE:latest\" --push ."
+				"publishCmd": "docker buildx build -t \"$IMAGE:${nextRelease.version}\" -t \"$IMAGE:latest\" --push . && helm package charts/dingorg && helm push dingorg-${nextRelease.version}.tgz \"oci://$CHART_REPO\""
 			}
 		],
 		[

@@ -270,6 +270,12 @@ helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.y
   --wait --timeout 15m
 ```
 
+chart 也随每次发版推到 GHCR：`oci://ghcr.io/yupanzi/charts/dingorg`。不想 checkout 时把上面的
+`./charts/dingorg` 换成这个地址、加 `--version X.Y.Z`（`values.example.yaml` 也在包里，
+`helm pull … --untar` 可取）。用 [Kite](https://github.com/kite-org/kite)（≥ v0.15.1）的话，在它的 Helm
+仓库里按 OCI 登记这个地址（不带 tag）。第一次发布后到 GitHub 的 package 设置里确认 `charts/dingorg`
+是 Public，否则匿名拉取失败。
+
 产出：Deployment + Service + Ingress + 两个 CronJob（`oidcpurge`、`orgsync`）+ migrate Job
 （`pre-install,pre-upgrade` hook）+ 部署后的 orgsync Job（`post-install,post-upgrade` hook）。
 需要 Kubernetes ≥ 1.26（Job 用了 `podFailurePolicy`）。
@@ -303,7 +309,8 @@ CI 的 check 过了之后，自上次发版以来的提交里
 | `docs:` `refactor:` `test:` `build:` `ci:` `chore:` `style:` | 不发版 |
 
 发版一次产出：`package.json` 与 `Chart.yaml` 的版本号、`CHANGELOG.md`、`vX.Y.Z` tag、GitHub Release、
-镜像 `ghcr.io/yupanzi/dingorg:X.Y.Z` 与 `:latest`（写回的那次提交带 `[skip ci]`）。
+镜像 `ghcr.io/yupanzi/dingorg:X.Y.Z` 与 `:latest`、chart `oci://ghcr.io/yupanzi/charts/dingorg:X.Y.Z`
+（写回的那次提交带 `[skip ci]`）。
 
 提交信息由 commit-msg 钩子（commitlint）校验，格式 `<type>(<scope>): <主题>`；
 `git config commit.template .gitmessage` 后 `git commit` 不带 `-m` 会弹出引导。
