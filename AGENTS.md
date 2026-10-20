@@ -252,8 +252,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
   `.releaserc.json` 的 `publishCmd` 里、chart 排在镜像之后；chart 路径别改成 owner 根，先后也别换
   （理由在 `ci.yml`）。PR 上只验证能构建，不推。
 - **Chart 的 `version` / `appVersion` 跟着发版走，`image.tag` 留空即 appVersion**（`_helpers.tpl`
-  的 `dingorg.image`，五类 Pod 共用）。写回在 `scripts/release-version.mjs`，Chart.yaml 的格式变了
-  它报错而不是空转。
+  的 `dingorg.image`，五类 Pod 共用）；`image.repository` 默认就是 `ci.yml` 的 `IMAGE`（理由在
+  `values.yaml`）。写回在 `scripts/release-version.mjs`，Chart.yaml 的格式变了它报错而不是空转。
 - ⚠️ **release job 别设 `GIT_AUTHOR_*`**，也别加名字含 key / auth / token、值是普通单词的变量
   （理由在 `ci.yml`）。
 - **`prepare` 的 `|| true` 别删**：Dockerfile 的 prod-deps 阶段没有 husky（devDep），删了镜像构建失败。
@@ -308,7 +308,7 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
     `LOG_LEVEL=verbose` 启动是一行 fatal JSON、exit 1。
   - chart：`helm lint charts/dingorg -f charts/dingorg/values.example.yaml`；`helm template` 看两个
     CronJob 与部署 hook 各自只拿到 `secretKeys` 里的键，`--set env.LOG_LEVEL=debug` 时五类 Pod 都有它；
-    `image.tag` 留空时五类 Pod 的镜像都是 `:<appVersion>`。
+    不覆盖 `image.*` 时五类 Pod 的镜像都是 `ghcr.io/yupanzi/dingorg:<appVersion>`。
   - 发版：`GITHUB_TOKEN=<对本仓库有写权限> pnpm release:dry` 看下一个版本号与发版说明（不推送、
     不建镜像；它先校验推送权限，没 token 就停在那一步）。
 

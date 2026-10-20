@@ -1,11 +1,6 @@
 # 部署起点：复制成 values.prod.yaml 后填写，步骤见 README「部署」。
 # ⚠️ 敏感值一个都不填在这里，放在预先建好的 Secret 里。
 
-image:
-  repository: ghcr.io/your-org/dingorg
-  # CI 发版时推 X.Y.Z 与 latest。留空即所用 chart 的 appVersion，要钉别的版本才填
-  tag: ''
-
 secretName: dingorg-app
 
 # ⚠️ 每次改 Secret 都要 bump

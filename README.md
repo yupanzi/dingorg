@@ -263,25 +263,23 @@ kubectl create secret generic dingorg-app -n dingorg-prod \
   --from-literal=DINGTALK_APP_SECRET='...' \
   --from-literal=AUTH_JSON="$AUTH"
 
-# 2. 切到要部署的版本（chart 的 appVersion 就是默认的镜像 tag），填 values 后部署
-git checkout vX.Y.Z
+# 2. 填 values 后部署发版号 X.Y.Z 的 chart（它的 appVersion 就是默认的镜像 tag）
 cp charts/dingorg/values.example.yaml values.prod.yaml
-helm upgrade --install dingorg ./charts/dingorg -n dingorg-prod -f values.prod.yaml \
-  --wait --timeout 15m
+helm upgrade --install dingorg oci://ghcr.io/yupanzi/charts/dingorg --version X.Y.Z \
+  -n dingorg-prod -f values.prod.yaml --wait --timeout 15m
 ```
 
-chart 也随每次发版推到 GHCR：`oci://ghcr.io/yupanzi/charts/dingorg`。不想 checkout 时把上面的
-`./charts/dingorg` 换成这个地址、加 `--version X.Y.Z`（`values.example.yaml` 也在包里，
-`helm pull … --untar` 可取）。用 [Kite](https://github.com/kite-org/kite)（≥ v0.15.1）的话，在它的 Helm
-仓库里按 OCI 登记这个地址（不带 tag）。第一次发布后到 GitHub 的 package 设置里确认 `charts/dingorg`
-是 Public，否则匿名拉取失败。
+部署还没发版的本地改动时，把 OCI 地址换成 `./charts/dingorg`、去掉 `--version`。
+用 [Kite](https://github.com/kite-org/kite)（≥ v0.15.1）的话，在它的 Helm 仓库里按 OCI 登记
+`oci://ghcr.io/yupanzi/charts/dingorg`（不带 tag）。⚠️ GHCR 的 package 不继承仓库的公开可见性：
+chart 第一次发布后要到 GitHub 的 package 设置里改成 Public，否则匿名拉取 403。
 
 产出：Deployment + Service + Ingress + 两个 CronJob（`oidcpurge`、`orgsync`）+ migrate Job
 （`pre-install,pre-upgrade` hook）+ 部署后的 orgsync Job（`post-install,post-upgrade` hook）。
 需要 Kubernetes ≥ 1.26（Job 用了 `podFailurePolicy`）。
 
-- 必填的 values：`image.repository`、`ingress.host`（`PUBLIC_ORIGIN` 从它派生）。`image.tag` 留空
-  即所用 chart 的 appVersion，要钉别的版本才填。
+- 必填的 values 只有 `ingress.host`（`PUBLIC_ORIGIN` 从它派生）。镜像默认是同一次发版推的
+  `ghcr.io/yupanzi/dingorg:<appVersion>`，转存到别的仓库或要钉别的版本才填 `image.*`。
 - **每次 install / upgrade 后自动同步一次组织数据**，首次部署不用手动触发。它失败（最常见是出口
   IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。

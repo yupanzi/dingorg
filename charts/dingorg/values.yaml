@@ -2,8 +2,9 @@
 # 敏感值不进 values（会留在 release 历史里），放在预先建好的 Secret 里。
 
 image:
-  # 如 ghcr.io/your-org/dingorg。所有 Pod 共用，靠 command 区分入口
-  repository: ''
+  # 默认即发版推的镜像（ci.yml 的 IMAGE）。⚠️ IMAGE 由仓库路径派生，仓库改名 / 转移后这里要手改。
+  # 所有 Pod 共用，靠 command 区分入口
+  repository: ghcr.io/yupanzi/dingorg
   # 留空即 Chart.yaml 的 appVersion（release 时两者一起 bump）。别填 latest：IfNotPresent 下
   # 节点上有旧的 latest 就不再拉，各节点跑的版本会不一样
   tag: ''
