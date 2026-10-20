@@ -14,21 +14,5 @@ spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 3600
   template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ include "dingorg.name" . }}
-        app.kubernetes.io/component: migrate
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: migrate
-          image: {{ include "dingorg.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ['node', 'dist/bin/migrate.js']
-          env:
-            {{- include "dingorg.secretEnv" (dict "root" . "keys" (list "DATABASE_URL")) | nindent 12 }}
-            {{- include "dingorg.logLevelEnv" . | nindent 12 }}
-          resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { memory: 512Mi }
+    {{- include "dingorg.taskPodTemplate" (dict "root" . "cfg" .Values.migration "component" "migrate" "name" "migrate" "entry" "dist/bin/migrate.js") | nindent 4 }}
 {{- end }}

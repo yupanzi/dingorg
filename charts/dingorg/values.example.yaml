@@ -11,6 +11,9 @@ ingress:
   className: nginx
   # PUBLIC_ORIGIN 从它派生
   host: dingorg.example.com
+  annotations:
+    # 理由见 README「部署」
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '120'
   tls: true
 
 server:

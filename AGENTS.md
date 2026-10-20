@@ -222,15 +222,18 @@ scripts/             release-version（发版时把版本写回 package.json 与
 
 - **一个镜像、多入口**，command 必须显式给。占位 CMD 报错退出 64，别删也别换成能跑的默认值。
 - **容器不设 `TZ`**，一律 UTC。
-- **敏感值不进 helm values**，chart 引用预先存在的 Secret 且不自建。
-- **每个一次性任务只注入它用得到的 Secret 键**（`_helpers.tpl` 的 `dingorg.secretEnv`），与
-  `env.ts` 的 `taskEnvSchema` / `orgSyncEnvSchema` 对齐，别换回 `envFrom`。
+- **chart 不自建 Secret**：凭证默认取 `secretName` 的同名键，可在 `values.env` 里按键改成
+  `valueFrom`。⚠️ 在 `env` 里把凭证写成字符串会留在 release 历史里，只作逃生口。
+- **每个 Pod 只注入它 `secretKeys` 里列的凭证键**（`_helpers.tpl` 的 `dingorg.env`），与 `env.ts`
+  的各 schema 对齐，别换回 `envFrom`。
+- **values 的覆盖规则只有两条**：`env` 按键合并（map 不是列表：多个 `-f` 才叠得起来）；Pod 通用项
+  在组件里写了就整个替换顶层的。`dingorg.selectorLabels` 不让 podLabels 覆盖。
 - **CronJob 的 `backoffLimit` 每个显式给**：orgsync 0（进程内重试），oidcpurge 2。任务 Job 共用
   `_helpers.tpl` 的 `dingorg.taskJobSpec`，其中 `podFailurePolicy` 让驱逐等中断不计入（k8s ≥ 1.26）。
 - **每次 install / upgrade 后 hook 跑一次 orgsync**：首次部署与升级后的组织数据都靠它（hook 用新镜像
   直接同步，不依赖常驻 Pod 滚完）；它失败会让 release 标成失败。与 cron 或 POST 撞上时由租约排队。
 - ⚠️ **换 `DINGTALK_APP_KEY` 后要显式同步一次**（懒加载不接管别的应用的数据）：upgrade 有 hook；
-  `helm rollback` 回到旧 key 时没有 hook，要手动 `kubectl create job --from=cronjob/<release>-orgsync`。
+  `helm rollback` 回到旧 key 时没有 hook，要手动 `kubectl create job --from=cronjob/dingorg-orgsync`。
 - ⚠️ **改了 Secret 必须 bump `values.secretVersion`**。
 - **`PUBLIC_ORIGIN` 由 chart 从 `ingress.host` 派生**。
 - **端口固定 3080，不做成可配**：`env.ts` 的 `LISTEN_PORT`、Dockerfile、chart 的 `server.yaml`
@@ -307,7 +310,8 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
   - 日志：带 `?code=xxx` 访问扫码回调，日志里 grep 不到 `xxx`；healthz 不出现；
     `LOG_LEVEL=verbose` 启动是一行 fatal JSON、exit 1。
   - chart：`helm lint charts/dingorg -f charts/dingorg/values.example.yaml`；`helm template` 看两个
-    CronJob 与部署 hook 各自只拿到 `secretKeys` 里的键，`--set env.LOG_LEVEL=debug` 时五类 Pod 都有它；
+    CronJob 与部署 hook 各自只拿到 `secretKeys` 里的键、`AUTH_JSON` 只在 server，`env` 里给了
+    `DATABASE_URL` 的 `valueFrom` 时五类 Pod 都改用它，`--set env.LOG_LEVEL=debug` 时五类 Pod 都有它；
     不覆盖 `image.*` 时五类 Pod 的镜像都是 `ghcr.io/yupanzi/dingorg:<appVersion>`。
   - 发版：`GITHUB_TOKEN=<对本仓库有写权限> pnpm release:dry` 看下一个版本号与发版说明（不推送、
     不建镜像；它先校验推送权限，没 token 就停在那一步）。

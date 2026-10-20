@@ -280,6 +280,9 @@ chart 第一次发布后要到 GitHub 的 package 设置里改成 Public，否�
 
 - 必填的 values 只有 `ingress.host`（`PUBLIC_ORIGIN` 从它派生）。镜像默认是同一次发版推的
   `ghcr.io/yupanzi/dingorg:<appVersion>`，转存到别的仓库或要钉别的版本才填 `image.*`。
+- 凭证默认全取 `secretName` 那个 Secret 的同名键；某个键要从别处取（如数据库 operator 生成的
+  Secret），在 `env` 里给它写 `valueFrom`。其余可调项（Pod 调度与安全项、Ingress、Service）与覆盖
+  规则见 `values.yaml` 的注释。
 - **每次 install / upgrade 后自动同步一次组织数据**，首次部署不用手动触发。它失败（最常见是出口
   IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。
@@ -291,7 +294,8 @@ chart 第一次发布后要到 GitHub 的 package 设置里改成 Public，否�
 - ⚠️ **换了 `DINGTALK_APP_KEY` 要显式同步一次**：旧应用的数据不会被自动接管（读的时候回 503）。
   upgrade 的 hook 会做；`helm rollback` 没有 hook，回滚后手动
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。
-- `POST /api/v1/sync` 大组织可能要几十秒，Ingress 的 `proxy-read-timeout`（nginx 默认 60 秒）要留够。
+- `POST /api/v1/sync` 大组织可能要几十秒，Ingress 的 `proxy-read-timeout`（nginx 默认 60 秒）要留够，
+  写在 `ingress.annotations`。
 - **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与组织同步。
 
 ## 版本与发布

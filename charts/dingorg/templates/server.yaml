@@ -1,3 +1,11 @@
+{{- /* PUBLIC_ORIGIN 从 ingress.host 派生：再填一遍只会制造配错机会 */}}
+{{- $server := deepCopy .Values.server }}
+{{- $env := $server.env | default dict }}
+{{- if and .Values.ingress.host (not (or $env.PUBLIC_ORIGIN .Values.env.PUBLIC_ORIGIN)) }}
+{{- $_ := set $env "PUBLIC_ORIGIN" (printf "%s://%s" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host) }}
+{{- end }}
+{{- $_ := set $server "env" $env }}
+{{- $c := dict "root" . "cfg" $server "component" "server" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,33 +17,24 @@ spec:
   replicas: {{ .Values.server.replicas }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "dingorg.name" . }}
-      app.kubernetes.io/component: server
+      {{- include "dingorg.selectorLabels" $c | nindent 6 }}
   template:
     metadata:
-      labels:
-        app.kubernetes.io/name: {{ include "dingorg.name" . }}
-        app.kubernetes.io/component: server
-      {{- with include "dingorg.podAnnotations" . }}
-      annotations:
-        {{- . | nindent 8 }}
-      {{- end }}
+      {{- include "dingorg.podMetadata" $c | nindent 6 }}
     spec:
+      {{- with include "dingorg.podSpec" $c }}
+      {{- . | nindent 6 }}
+      {{- end }}
       containers:
         - name: server
-          image: {{ include "dingorg.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- include "dingorg.containerBase" $c | nindent 10 }}
           command: ['node', 'dist/server.js']
           ports:
             # 与 src/env.ts 的 LISTEN_PORT 一致；探针与 Service 按名字引用它
             - name: http
               containerPort: 3080
           env:
-            {{- include "dingorg.env" . | nindent 12 }}
-          envFrom:
-            {{- include "dingorg.envFrom" . | nindent 12 }}
-          resources:
-            {{- toYaml .Values.server.resources | nindent 12 }}
+            {{- include "dingorg.env" $c | nindent 12 }}
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
@@ -51,15 +50,18 @@ metadata:
   name: {{ include "dingorg.name" . }}
   labels:
     {{- include "dingorg.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.service.type }}
   ports:
     - port: 80
       targetPort: http
       name: http
   selector:
-    app.kubernetes.io/name: {{ include "dingorg.name" . }}
-    app.kubernetes.io/component: server
+    {{- include "dingorg.selectorLabels" $c | nindent 4 }}
 {{- if and .Values.ingress.enabled .Values.ingress.host }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -68,12 +70,18 @@ metadata:
   name: {{ include "dingorg.name" . }}
   labels:
     {{- include "dingorg.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
   {{- if .Values.ingress.tls }}
   tls:
     - hosts: [{{ .Values.ingress.host | quote }}]
-      secretName: {{ include "dingorg.name" . }}-tls
+      secretName: {{ .Values.ingress.tlsSecretName | default (printf "%s-tls" (include "dingorg.name" .)) }}
   {{- end }}
   rules:
     - host: {{ .Values.ingress.host | quote }}
