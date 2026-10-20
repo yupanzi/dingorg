@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
+import { libpqUrl } from "~/db/libpq-url";
 import * as schema from "~/db/schema";
 
 // casing 必须与 drizzle.config.ts 一致，否则运行时列名对不上
@@ -14,7 +15,7 @@ interface DbOptions {
 
 export function createDb(connectionString: string, opts: DbOptions = {}) {
 	const pool = new Pool({
-		connectionString,
+		connectionString: libpqUrl(connectionString),
 		max: opts.maxConnections ?? 10,
 		connectionTimeoutMillis: 5_000,
 		idleTimeoutMillis: 30_000,

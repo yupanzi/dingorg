@@ -26,7 +26,7 @@ src/
 ├── deps.ts          db（单池）
 ├── log.ts           pino 根 logger · err 序列化与脱敏
 ├── resources.ts     advisory lock 键 · app_secrets 键 · 审计动作串
-├── db/              连接池工厂 · schema/
+├── db/              连接池工厂 · libpq-url（sslmode 语义）· schema/
 ├── domain/          纯逻辑、无 IO：oidc-client · api-key · config-json · org-api
 │                    · org-sync · org-identity · org-title · sync · audit
 ├── oidc/            provider · adapter · account（准入）· keys · mount · new-client
@@ -238,6 +238,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **`PUBLIC_ORIGIN` 由 chart 从 `ingress.host` 派生**。
 - **端口固定 3080，不做成可配**：`env.ts` 的 `LISTEN_PORT`、Dockerfile、chart 的 `server.yaml`
   三处同一个数。
+- **`DATABASE_URL` 进 pg 前一律过 `db/libpq-url.ts`**（`createDb` 与 `drizzle.config.ts` 两处），
+  `sslmode` 才按 libpq 语义，理由在文件头。
 - **orgsync 拿库与钉钉凭证，不拿 `AUTH_JSON`**；`AUTH_JSON` 里可以没有 apikey 项（= 不开 REST 面）。
 - **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与组织同步。
 - **deploy 不进 CI。写完 Dockerfile 一定 `docker run` 一次。**
@@ -291,7 +293,7 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
   软删除、读写往返） · token `dingtalk/access-token.integration.test.ts`
   · API key `auth/api-key.test.ts`、`domain/api-key.test.ts` · OIDC 契约与 REST 面
   `app.integration.test.ts` · 凭证配置 `domain/config-json.test.ts`、`domain/oidc-client.test.ts`、
-  `env.test.ts`、`oidc/new-client.test.ts` · 脱敏 `log.test.ts`
+  `env.test.ts`、`oidc/new-client.test.ts` · 脱敏 `log.test.ts` · sslmode 语义 `db/index.test.ts`
   · 职级 `domain/org-title.test.ts`。
 - **准入必跑 `oidc/account.integration.test.ts`**，「状态行属于别的应用时一律拒绝」与「已离开的人拒绝」
   两条不能删。

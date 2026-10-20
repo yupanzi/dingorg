@@ -283,6 +283,9 @@ chart 第一次发布后要到 GitHub 的 package 设置里改成 Public，否�
 - 凭证默认全取 `secretName` 那个 Secret 的同名键；某个键要从别处取（如数据库 operator 生成的
   Secret），在 `env` 里给它写 `valueFrom`。其余可调项（Pod 调度与安全项、Ingress、Service）与覆盖
   规则见 `values.yaml` 的注释。
+- `DATABASE_URL` 的 `sslmode` 与 psql 同义，密码要 URL 编码。连 AWS RDS 写 `?sslmode=require`
+  （加密、不验证证书；RDS for PostgreSQL 15 起默认拒绝明文）；要验证证书写
+  `?sslmode=verify-full&sslrootcert=<RDS CA 包的路径>`，CA 包要自己放进 Pod。Aurora 用写入端点。
 - **每次 install / upgrade 后自动同步一次组织数据**，首次部署不用手动触发。它失败（最常见是出口
   IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。

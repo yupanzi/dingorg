@@ -1,5 +1,7 @@
 import { defineConfig } from "drizzle-kit";
 
+import { libpqUrl } from "./src/db/libpq-url";
+
 // 显式加载 .env，不依赖 drizzle-kit 的隐式行为（失败症状是静默连到默认库）
 try {
 	process.loadEnvFile(".env");
@@ -14,5 +16,5 @@ export default defineConfig({
 	dialect: "postgresql",
 	// ⚠️ 必须与 `~/db/index.ts` 的 casing 一致
 	casing: "snake_case",
-	dbCredentials: { url },
+	dbCredentials: { url: libpqUrl(url) },
 });
