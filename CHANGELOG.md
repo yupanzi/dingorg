@@ -1,3 +1,9 @@
+## [1.4.1](https://github.com/yupanzi/dingorg/compare/v1.4.0...v1.4.1) (2026-10-20)
+
+### Bug Fixes
+
+* **db:** sslmode 按 libpq 语义，写 require 能连上 RDS ([735e369](https://github.com/yupanzi/dingorg/commit/735e3699a3eee6f77831f28435bc6cd48b63f4ff))
+
 ## [1.4.0](https://github.com/yupanzi/dingorg/compare/v1.3.0...v1.4.0) (2026-10-20)
 
 ### Features
