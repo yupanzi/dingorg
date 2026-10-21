@@ -1,3 +1,9 @@
+## [1.5.0](https://github.com/yupanzi/dingorg/compare/v1.4.1...v1.5.0) (2026-10-21)
+
+### Features
+
+* **oidc:** 登录时向钉钉实时确认是内部员工，新人扫码时补同步 ([8f82689](https://github.com/yupanzi/dingorg/commit/8f826891c763b71a644b3fbfba3651ac7dbc987d))
+
 ## [1.4.1](https://github.com/yupanzi/dingorg/compare/v1.4.0...v1.4.1) (2026-10-20)
 
 ### Bug Fixes

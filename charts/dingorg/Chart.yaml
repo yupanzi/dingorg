@@ -2,5 +2,5 @@ apiVersion: v2
 name: dingorg
 description: 钉钉认证 → 标准 OIDC，外加钉钉组织架构同步的 REST 出口（API key 鉴权）
 type: application
-version: 1.4.1
-appVersion: '1.4.1'
+version: 1.5.0
+appVersion: '1.5.0'
