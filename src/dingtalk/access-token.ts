@@ -3,7 +3,11 @@ import type { Database } from "~/db";
 import { appSecrets } from "~/db/schema";
 import { accessTokenKey } from "~/resources";
 
-import { type DingtalkCredentials, fetchAccessToken } from "./client";
+import {
+	type DingtalkCredentials,
+	fetchAccessToken,
+	isTokenError,
+} from "./client";
 
 /**
  * 钉钉企业 access token（自有应用）：进程内 → PG（跨副本共享）→ 申请并写回。钉钉没有
@@ -38,6 +42,26 @@ const REFRESH_LEAD_S = Math.floor(Math.random() * 120);
 
 function isFresh(expiresAt: number): boolean {
 	return expiresAt - REFRESH_LEAD_S > nowSec();
+}
+
+/**
+ * 企业接口一律经它调：拿 token 调 `fn`，钉钉说 token 失效时先丢掉这一把再抛。⚠️ 别自己拿了
+ * token 再调：不丢的话坏 token 留在进程与 PG 两级缓存里，可自愈的故障变成必须重启。
+ */
+export async function withAccessToken<T>(
+	db: Database,
+	cred: DingtalkCredentials,
+	fn: (accessToken: string) => Promise<T>,
+): Promise<T> {
+	const accessToken = await getAccessToken(db, cred);
+	try {
+		return await fn(accessToken);
+	} catch (err) {
+		if (isTokenError(err)) {
+			await invalidateAccessToken(db, cred.clientId, accessToken);
+		}
+		throw err;
+	}
 }
 
 /** 钉钉拒绝抛 `DingtalkError` */

@@ -1,18 +1,25 @@
 import { sql } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb } from "~/db";
 import { orgSync } from "~/db/schema";
+import { checkEmployment, type Employment } from "~/dingtalk/employment";
 import type { MemberFields } from "~/domain/org-sync";
 import { fetchedOrg, resetOrgSync, seedOrgSync } from "~/sync/testing";
 
 import { makeFindAccount } from "./account";
 
 /**
- * 准入回归：判据只有「是自有应用同步结果里的当前成员」，claim 集合固定且不含 roles。判错是
- * 静默的，而这里是离职唯一起作用的地方。
+ * 准入回归：是自有应用同步结果里的当前成员，且（复用会话时）钉钉实时确认是内部员工；claim 集合
+ * 固定且不含 roles。判错是静默的，而复用 oidc-provider 会话的人只经过这里。组合规则本身由
+ * `~/admission` 的测试钉住，这里钉的是 `findAccount` 怎么用它。
  */
 const url = process.env.DATABASE_URL;
 const maybe = url ? describe : describe.skip;
+
+let employment: Employment = "employee";
+vi.mock("~/dingtalk/employment", () => ({
+	checkEmployment: vi.fn(async () => employment),
+}));
 
 const OWN_APP = "itest-account-own-app";
 const OTHER_APP = "itest-account-other-app";
@@ -48,12 +55,20 @@ const OWN_MEMBERS = [
 
 maybe("findAccount 准入 (需要 DATABASE_URL)", () => {
 	const db = createDb(url ?? "", { maxConnections: 2 });
-	const findAccount = makeFindAccount(db, OWN_APP);
+	const findAccount = makeFindAccount({
+		db,
+		dingtalk: { clientId: OWN_APP, clientSecret: "x" },
+	});
 
-	// biome-ignore lint/suspicious/noExplicitAny: oidc-provider 的 KoaContextWithOIDC 造不出来，且本实现不读它
+	// biome-ignore lint/suspicious/noExplicitAny: oidc-provider 的 KoaContextWithOIDC 造不出来，本实现只从它取 logger
 	const ctx = {} as any;
+	// token 端点与 userinfo 调 findAccount 时带的 token，本实现只看有没有
+	// biome-ignore lint/suspicious/noExplicitAny: 同上
+	const token = {} as any;
 
 	beforeEach(async () => {
+		vi.clearAllMocks();
+		employment = "employee";
 		await resetOrgSync(db);
 		await seedOrgSync(db, OWN_APP, fetchedOrg(OWN_MEMBERS));
 	});
@@ -133,7 +148,7 @@ maybe("findAccount 准入 (需要 DATABASE_URL)", () => {
 		await expect(findAccount(ctx, MEMBER_UNIONID)).resolves.toBeUndefined();
 	});
 
-	// ⚠️ 离职生效靠的就是这一条
+	// ⚠️ 钉钉实时校验不可用时，离职生效靠的就是这一条
 	it("已离开的人拒绝", async () => {
 		await seedOrgSync(db, OWN_APP, fetchedOrg(OWN_MEMBERS.slice(1)));
 
@@ -157,5 +172,25 @@ maybe("findAccount 准入 (需要 DATABASE_URL)", () => {
 		await db.update(orgSync).set({ fetchedAt: sql`null` });
 
 		await expect(findAccount(ctx, MEMBER_UNIONID)).resolves.toBeUndefined();
+	});
+
+	// ⚠️ 复用会话（授权端点不带 token）不经扫码回调，离职的人只能在这里拦
+	it("复用会话时钉钉实时说不是员工 → 拒，哪怕同步结果里还有", async () => {
+		employment = "not_employee";
+
+		await expect(findAccount(ctx, MEMBER_UNIONID)).resolves.toBeUndefined();
+		expect(checkEmployment).toHaveBeenCalledTimes(1);
+	});
+
+	it("token 端点与 userinfo（带 token）不问钉钉，只看同步结果", async () => {
+		employment = "not_employee";
+
+		await expect(
+			findAccount(ctx, MEMBER_UNIONID, token),
+		).resolves.toBeDefined();
+		await expect(
+			findAccount(ctx, OUTSIDER_UNIONID, token),
+		).resolves.toBeUndefined();
+		expect(checkEmployment).not.toHaveBeenCalled();
 	});
 });

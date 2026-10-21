@@ -63,11 +63,13 @@ service:
 cronjobs:
   oidcpurge:
     # ⚠️ 清理 OIDC 过期工件，删了它 oidc_payloads 会无限涨
-    schedule: '43 2 * * *'
+    # UTC 12:00 = 北京时间 20:00
+    schedule: '0 12 * * *'
     secretKeys: [DATABASE_URL]
     backoffLimit: 2
   orgsync:
-    # ⚠️ 自有应用组织数据的每日同步，删了它离职的人一直能登录。与部署 hook 撞上时由租约排队。
+    # ⚠️ 自有应用组织数据的每日同步，删了它 REST 名单停在旧的，钉钉实时校验不可用时离职的人
+    # 一直能登录。与部署 hook 撞上时由租约排队。
     # UTC 04:00 = 北京时间 12:00
     schedule: '0 4 * * *'
     # 直接调同步（不经 HTTP），所以要库与钉钉凭证，不要任何 API key

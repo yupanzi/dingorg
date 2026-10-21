@@ -9,6 +9,7 @@ import {
 } from "~/db/schema";
 import type { OrgApiDept } from "~/domain/org-api";
 import type { FetchedOrg, MemberFields } from "~/domain/org-sync";
+import { SYNC_COOLDOWN_MS } from "~/domain/sync";
 
 import { interval, type WriteResult, writeOrgSync } from "./store";
 
@@ -90,6 +91,11 @@ export async function ageOrgSync(
 				}
 			: {}),
 	});
+}
+
+/** 拨过冷却期（已有数据时）：下一次同步会真的外呼 */
+export async function passCooldown(db: Database): Promise<void> {
+	await ageOrgSync(db, 2 * SYNC_COOLDOWN_MS, { fetched: true });
 }
 
 /** 假装别处持着租约；`ms` 为负即已过期的租约 */

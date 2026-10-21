@@ -1,6 +1,6 @@
 import type { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
-import Provider from "oidc-provider";
+import Provider, { interactionPolicy } from "oidc-provider";
 
 import type { Deps } from "../deps";
 import { pickAuthEntries } from "../domain/config-json";
@@ -12,14 +12,39 @@ import {
 	compileRedirectUriRegexes,
 	matchesRedirectUriRegex,
 } from "../domain/oidc-client";
-import { type IdpEnv, trustsProxyHeaders } from "../env";
-import { type Log, logger } from "../log";
+import { type IdpEnv, ownDingtalkApp, trustsProxyHeaders } from "../env";
+import { logFor } from "../log";
 import { makeFindAccount } from "./account";
 import { createAdapterFactory } from "./adapter";
 import { ensureOidcKeys } from "./keys";
 import { oidcIssuer } from "./mount";
 
 const DAY = 24 * 60 * 60;
+
+/**
+ * 会话还在、`findAccount` 却不放行（离职、钉钉实时说不是员工）时回到扫码，由回调给 403。
+ * ⚠️ 别删：上游的 `no_session` 只看 `session.accountId`，没有这条就一路走到 consent 检查去读
+ * 没加载的 grant，抛 500。哨兵是 `app.integration.test.ts` 复用会话的那几条。
+ *
+ * ⚠️ `login_required` 别省：`checks.add` 加进来的拿不到 prompt 的默认 error，`prompt=none`
+ * 时会回 `interaction_required`。
+ */
+function interactionPolicyWithAdmission() {
+	const policy = interactionPolicy.base();
+	const login = policy.get("login");
+	if (!login) {
+		throw new Error("oidc-provider 的默认 policy 里没有 login prompt");
+	}
+	login.checks.add(
+		new interactionPolicy.Check(
+			"not_admitted",
+			"End-User is no longer admitted",
+			"login_required",
+			(ctx) => Boolean(ctx.oidc.session?.accountId) && !ctx.oidc.account,
+		),
+	);
+	return policy;
+}
 
 export async function createOidcProvider(
 	deps: Deps,
@@ -30,7 +55,10 @@ export async function createOidcProvider(
 
 	const provider = new Provider(oidcIssuer(env), {
 		adapter: createAdapterFactory(deps.db),
-		findAccount: makeFindAccount(deps.db, env.DINGTALK_APP_KEY),
+		findAccount: makeFindAccount({
+			db: deps.db,
+			dingtalk: ownDingtalkApp(env),
+		}),
 		// jose 的 JWK 与 oidc-provider 的声明结构等价
 		jwks: { keys: keys.jwks as unknown as Record<string, unknown>[] },
 		cookies: { keys: keys.cookieKeys },
@@ -63,6 +91,7 @@ export async function createOidcProvider(
 		},
 
 		interactions: {
+			policy: interactionPolicyWithAdmission(),
 			// 浏览器可见路径：interaction cookie 按它做 path 作用域
 			url: (_ctx, interaction) => `/oidc/interaction/${interaction.uid}`,
 		},
@@ -82,10 +111,6 @@ export async function createOidcProvider(
 
 	// 反代之后要信任 `x-forwarded-proto`，判据见 `trustsProxyHeaders`
 	provider.proxy = trustsProxyHeaders(env);
-
-	// middie 把 `req.log`（带 reqId）挂在了原始请求上
-	const logFor = (ctx?: { req?: IncomingMessage }) =>
-		(ctx?.req as (IncomingMessage & { log?: Log }) | undefined)?.log ?? logger;
 
 	// ⚠️ 端点的 500 上游只发这个事件、自己不记
 	provider.on("server_error", (ctx, err) => {

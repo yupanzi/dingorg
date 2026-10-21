@@ -3,8 +3,12 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb } from "~/db";
 import { appSecrets } from "~/db/schema";
 import { accessTokenKey } from "~/resources";
-import { getAccessToken, invalidateAccessToken } from "./access-token";
-import type { DingtalkCredentials } from "./client";
+import {
+	getAccessToken,
+	invalidateAccessToken,
+	withAccessToken,
+} from "./access-token";
+import { type DingtalkCredentials, DingtalkError } from "./client";
 
 /**
  * 只 mock `fetchAccessToken`（数外呼次数、控制耗时与成败），PG 用真的：条件写与
@@ -175,5 +179,37 @@ maybe("access token 按 appKey (需要 DATABASE_URL)", () => {
 
 		await pending;
 		expect((await readPgToken(APP_A))?.access_token).toBe("tok-newer");
+	});
+
+	// ⚠️ 企业接口都经它：少了这一步坏 token 一直留在两级缓存里
+	it("withAccessToken：钉钉说 token 失效 → 两级缓存都丢掉再抛，下一次重新申请", async () => {
+		// topapi 的实际回法，判定见 `isTokenError`
+		const bad = new DingtalkError("不合法的access_token", {
+			errcode: 88,
+			subCode: "40014",
+		});
+		await expect(
+			withAccessToken(db, cred(APP_A), async () => {
+				throw bad;
+			}),
+		).rejects.toBe(bad);
+		expect(await readPgToken(APP_A)).toBeUndefined();
+
+		await expect(
+			withAccessToken(db, cred(APP_A), async (t) => t),
+		).resolves.toBe("tok-2");
+		expect(fetchCount).toBe(2);
+	});
+
+	it("withAccessToken：其他错误照抛，token 留着", async () => {
+		const busy = new DingtalkError("系统繁忙", { errcode: -1 });
+		await expect(
+			withAccessToken(db, cred(APP_A), async () => {
+				throw busy;
+			}),
+		).rejects.toBe(busy);
+
+		await withAccessToken(db, cred(APP_A), async (t) => t);
+		expect(fetchCount).toBe(1);
 	});
 });

@@ -17,10 +17,24 @@ export const SYNC_BUSY_RETRY_MS = 10_000;
 /** `refreshed` 这一次拉了钉钉 · `cooldown` 冷却期内未外呼 · `busy` 别处正在拉、未外呼 */
 export type SyncOutcome = "refreshed" | "cooldown" | "busy";
 
-/** `sync.trigger` 审计的说法：REST 面与 orgsync 调的是同一份同步，记账也用同一套话 */
+/** 一次同步请求的结局：`SyncOutcome`，或 `failed`（抛错） */
+export type SyncTriggerResult = SyncOutcome | "failed";
+
+/** `sync.trigger` 审计的说法：各入口调的是同一份同步，记账也用同一套话 */
 export const SYNC_TRIGGER_SUMMARY = {
 	refreshed: "同步了组织数据",
 	cooldown: "请求同步，冷却期内未外呼",
 	busy: "请求同步，另一处正在同步、未外呼",
 	failed: "同步组织数据失败",
-} as const satisfies Record<SyncOutcome | "failed", string>;
+} as const satisfies Record<SyncTriggerResult, string>;
+
+/** 自己写 `sync.trigger` 的入口（orgsync、登录补同步）共用：只有抛错算 failure */
+export function syncTriggerAudit(r: SyncTriggerResult): {
+	status: "success" | "failure";
+	details: { summary: string };
+} {
+	return {
+		status: r === "failed" ? "failure" : "success",
+		details: { summary: SYNC_TRIGGER_SUMMARY[r] },
+	};
+}

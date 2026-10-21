@@ -1,3 +1,5 @@
+import type { IncomingMessage } from "node:http";
+
 import { DrizzleQueryError } from "drizzle-orm";
 import pino, { type BaseLogger } from "pino";
 
@@ -115,6 +117,13 @@ export function atLeast(min: LogLevel, current: string): LogLevel {
 
 /** 函数要 logger 参数时收它：`req.log` 与根 logger 都满足，不必依赖 fastify 的类型 */
 export type Log = Pick<BaseLogger, "error" | "warn" | "info" | "debug">;
+
+/** oidc-provider 的 Koa ctx 里：middie 把 `req.log`（带 reqId）挂在了原始请求上 */
+export function logFor(ctx?: { req?: IncomingMessage }): Log {
+	return (
+		(ctx?.req as (IncomingMessage & { log?: Log }) | undefined)?.log ?? logger
+	);
+}
 
 function serializeError(err: unknown): unknown {
 	return pino.stdSerializers.err(redactQueryParams(err) as Error);

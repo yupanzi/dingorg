@@ -3,7 +3,15 @@ import { inspect } from "node:util";
 
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { newApiKey } from "~/auth/new-api-key";
 import { appSecrets, auditLogs } from "~/db/schema";
 import { invalidateAccessToken } from "~/dingtalk/access-token";
@@ -12,6 +20,7 @@ import {
 	DingtalkError,
 	fetchAccessToken,
 } from "~/dingtalk/client";
+import { checkEmployment, type Employment } from "~/dingtalk/employment";
 import { fetchOrg } from "~/dingtalk/fetch-org";
 import { apiKeyEntryId } from "~/domain/api-key";
 import { CLIENT_SCOPE } from "~/domain/oidc-client";
@@ -19,7 +28,15 @@ import { SYNC_TRIGGER_SUMMARY } from "~/domain/sync";
 import { type IdpEnv, parseEnv } from "~/env";
 import { createOidcProvider } from "~/oidc/provider";
 import { AUDIT_ACTIONS, accessTokenKey } from "~/resources";
-import { ageOrgSync, holdLease, resetOrgSync } from "~/sync/testing";
+import {
+	ageOrgSync,
+	fetchedOrg,
+	holdLease,
+	member,
+	passCooldown,
+	resetOrgSync,
+	seedOrgSync,
+} from "~/sync/testing";
 
 import { buildApp } from "./app";
 import { closeDeps, createDeps, type Deps } from "./deps";
@@ -29,10 +46,13 @@ import { idpEnvSchema } from "./env";
  * 路由契约：OIDC 挂载不吞路由、静态 client、REST 面鉴权与错误翻译。
  *
  * mock 两个钉钉出口，成败由 `tokenError` / `orgFailure` 控制；`fetchOrg` 按 token 返回
- * 可区分的组织。⚠️ 别往 buildApp 里加启动即外呼的逻辑：这里会拿假凭证去真打钉钉。
+ * 可区分的组织。扫码换身份给出 `scannedUnionId`，实时校验给出 `employment`。
+ * ⚠️ 别往 buildApp 里加启动即外呼的逻辑：这里会拿假凭证去真打钉钉。
  */
 let tokenError: Error | null = null;
 let orgFailure: "ip-blocked" | "internal" | null = null;
+let scannedUnionId = "";
+let employment: Employment = "employee";
 vi.mock("~/dingtalk/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("~/dingtalk/client")>()),
 	fetchAccessToken: vi.fn(async (cred: DingtalkCredentials) => {
@@ -42,6 +62,11 @@ vi.mock("~/dingtalk/client", async (importOriginal) => ({
 			expiresAt: Math.floor(Date.now() / 1000) + 7200,
 		};
 	}),
+	getUserAccessToken: vi.fn(async () => ({ accessToken: "itest-user-token" })),
+	getContactUser: vi.fn(async () => ({ unionId: scannedUnionId })),
+}));
+vi.mock("~/dingtalk/employment", () => ({
+	checkEmployment: vi.fn(async () => employment),
 }));
 vi.mock("~/dingtalk/fetch-org", async () => {
 	const { DingtalkError } = await import("~/dingtalk/client");
@@ -137,6 +162,18 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 		await closeDeps(deps);
 	});
 
+	// 回到「从没同步过」：清空组织同步（冷却、租约跟着清掉）与 token 的两级缓存
+	async function resetOwnSync() {
+		tokenError = null;
+		orgFailure = null;
+		await resetOrgSync(deps.db);
+		await deps.db
+			.delete(appSecrets)
+			.where(eq(appSecrets.key, accessTokenKey(DINGTALK_APP_KEY)));
+		// 不匹配的 badToken：条件删除不命中，只清进程内
+		await invalidateAccessToken(deps.db, DINGTALK_APP_KEY, "itest-clear");
+	}
+
 	it("healthz 返回 200 —— 确认 oidc 挂载没有吞掉 fastify 自有路由", async () => {
 		const res = await app.inject({ method: "GET", url: "/healthz" });
 		expect(res.statusCode).toBe(200);
@@ -178,16 +215,20 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 	});
 
 	describe("静态 client（AUTH_JSON 的 oidc 项）", () => {
-		// RFC 7636 的示例 challenge（强制 PKCE）
+		// RFC 7636 附录 B 的示例（强制 PKCE）
+		const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 		const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 		const [REDIRECT_A] = CLIENT_A.redirectUris;
 		const [REDIRECT_B] = CLIENT_B.redirectUris;
 
-		const authorize = (params: Record<string, string>) =>
+		const authorize = (
+			params: Record<string, string>,
+			headers: Record<string, string> = {},
+		) =>
 			app.inject({
 				method: "GET",
 				url: "/oidc/auth",
-				headers: { host: HOST },
+				headers: { host: HOST, ...headers },
 				query: {
 					response_type: "code",
 					scope: "openid",
@@ -198,17 +239,18 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 				},
 			});
 
-		// 用不存在的授权码换 token：client 认证过了是 invalid_grant，没过是 invalid_client
+		// 默认用不存在的授权码：client 认证过了是 invalid_grant，没过是 invalid_client
 		const exchange = (opts: {
 			clientId: string;
 			secret: string;
 			method: "post" | "basic";
+			code?: string;
 		}) => {
 			const form = new URLSearchParams({
 				grant_type: "authorization_code",
-				code: "itest-no-such-code",
+				code: opts.code ?? "itest-no-such-code",
 				redirect_uri: REDIRECT_A,
-				code_verifier: "itest-verifier-0123456789012345678901234567890",
+				code_verifier: VERIFIER,
 			});
 			const headers: Record<string, string> = {
 				host: HOST,
@@ -326,6 +368,188 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 				}
 			}
 		});
+
+		describe("扫码登录与准入", () => {
+			const UA = "itest-scan";
+			const SCAN_MEMBER = member("itest.scan.member");
+			const MEMBER_UNIONID = SCAN_MEMBER.unionid ?? "";
+			/** 钉钉里有、同步结果里还没有：补同步时 `fetchOrg` 按 token 给出的那个人（见文件头） */
+			const NEW_HIRE_UNIONID = `union-tok-${DINGTALK_APP_KEY}`;
+
+			/** inject 不管 cookie：手动带，按名字存、不分 path */
+			type Jar = Map<string, string>;
+			const headersOf = (jar: Jar) => ({
+				"user-agent": UA,
+				cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "),
+			});
+			const send = (jar: Jar, url: string) =>
+				app.inject({
+					method: "GET",
+					url,
+					headers: { host: HOST, ...headersOf(jar) },
+				});
+			type Reply = Awaited<ReturnType<typeof send>>;
+			const keep = (jar: Jar, res: Reply) => {
+				for (const c of res.cookies) {
+					if (c.value) jar.set(c.name, c.value);
+					else jar.delete(c.name);
+				}
+			};
+			const pathOf = (location: unknown) => {
+				const u = new URL(String(location), `http://${HOST}`);
+				return u.pathname + u.search;
+			};
+
+			/**
+			 * 发起授权，断言被送去扫码（而不是直接拿到授权码）；跳过钉钉授权页，直接带授权码
+			 * 回调，换出来的身份是 `unionId`
+			 */
+			async function scan(jar: Jar, unionId: string): Promise<Reply> {
+				const start = await authorize(
+					{ client_id: CLIENT_A.id, redirect_uri: REDIRECT_A },
+					headersOf(jar),
+				);
+				keep(jar, start);
+				expect(start.statusCode).toBe(303);
+				const interaction = pathOf(start.headers.location);
+				expect(interaction).toMatch(/^\/oidc\/interaction\//);
+				const uid = interaction.split("/").pop() ?? "";
+				scannedUnionId = unionId;
+				const cb = await send(
+					jar,
+					`/oidc/interaction/${uid}/callback?code=itest-code&state=${uid}`,
+				);
+				keep(jar, cb);
+				return cb;
+			}
+
+			/** 回调放行之后走完 resume，返回发给下游的授权码 */
+			async function resume(jar: Jar, cb: Reply): Promise<string> {
+				expect(cb.statusCode).toBe(303);
+				const res = await send(jar, pathOf(cb.headers.location));
+				keep(jar, res);
+				expect(res.statusCode).toBe(303);
+				const to = new URL(String(res.headers.location));
+				expect(`${to.origin}${to.pathname}`).toBe(REDIRECT_A);
+				return to.searchParams.get("code") ?? "";
+			}
+
+			const auditRows = () =>
+				deps.db.select().from(auditLogs).where(eq(auditLogs.userAgent, UA));
+
+			async function cleanup() {
+				await resetOwnSync();
+				await deps.db.delete(auditLogs).where(eq(auditLogs.userAgent, UA));
+			}
+
+			beforeEach(async () => {
+				await cleanup();
+				vi.mocked(checkEmployment).mockClear();
+				vi.mocked(fetchOrg).mockClear();
+				employment = "employee";
+				await seedOrgSync(deps.db, DINGTALK_APP_KEY, fetchedOrg([SCAN_MEMBER]));
+			});
+			afterAll(cleanup);
+
+			it("员工走完全程：回调与 resume 各实时校验一次，token 与 userinfo 不再问钉钉", async () => {
+				const jar: Jar = new Map();
+				const code = await resume(jar, await scan(jar, MEMBER_UNIONID));
+
+				const token = await exchange({
+					clientId: CLIENT_A.id,
+					secret: CLIENT_A.secret,
+					method: "post",
+					code,
+				});
+				expect(token.json()).toMatchObject({
+					access_token: expect.any(String),
+				});
+				const me = await app.inject({
+					method: "GET",
+					url: "/oidc/me",
+					headers: {
+						host: HOST,
+						authorization: `Bearer ${token.json().access_token}`,
+					},
+				});
+				expect(me.json()).toMatchObject({ sub: MEMBER_UNIONID });
+
+				// ⚠️ 升级 oidc-provider 的哨兵（`~/oidc/account` 只在 token 为空时实时校验）：少一次 =
+				// 复用会话不再实时校验，多了 = token 端点或 userinfo 也在外呼
+				expect(checkEmployment).toHaveBeenCalledTimes(2);
+				expect(await auditRows()).toEqual([
+					expect.objectContaining({
+						action: AUDIT_ACTIONS.authLogin,
+						status: "success",
+						actorId: MEMBER_UNIONID,
+					}),
+				]);
+			});
+
+			it("钉钉说不是员工 → 403，审计写明原因，不补同步", async () => {
+				employment = "not_employee";
+				await passCooldown(deps.db);
+
+				const cb = await scan(new Map(), MEMBER_UNIONID);
+
+				expect(cb.statusCode).toBe(403);
+				expect(fetchOrg).not.toHaveBeenCalled();
+				const rows = await auditRows();
+				expect(rows).toHaveLength(1);
+				expect(rows[0]).toMatchObject({
+					action: AUDIT_ACTIONS.authReject,
+					actorId: MEMBER_UNIONID,
+				});
+				expect(rows[0]?.details?.summary).toContain("不是本企业内部员工");
+			});
+
+			// ⚠️ 复用会话不经回调：离职当下就要拦住，且不能是 500
+			it("复用会话时钉钉说已不是员工 → 不发授权码、回到扫码，再扫是 403", async () => {
+				const jar: Jar = new Map();
+				await resume(jar, await scan(jar, MEMBER_UNIONID));
+
+				employment = "not_employee";
+				expect((await scan(jar, MEMBER_UNIONID)).statusCode).toBe(403);
+			});
+
+			// 静默认证的下游只在 login_required 时转交互登录
+			it("复用会话、prompt=none、钉钉说已不是员工 → login_required", async () => {
+				const jar: Jar = new Map();
+				await resume(jar, await scan(jar, MEMBER_UNIONID));
+
+				employment = "not_employee";
+				const res = await authorize(
+					{ client_id: CLIENT_A.id, redirect_uri: REDIRECT_A, prompt: "none" },
+					headersOf(jar),
+				);
+				expect(res.statusCode).toBe(303);
+				const to = new URL(String(res.headers.location));
+				expect(`${to.origin}${to.pathname}`).toBe(REDIRECT_A);
+				expect(to.searchParams.get("error")).toBe("login_required");
+			});
+
+			it("钉钉确认是员工、同步结果里没有（新人）→ 补同步后登录，多一条 sync.trigger", async () => {
+				await passCooldown(deps.db);
+				const jar: Jar = new Map();
+
+				await resume(jar, await scan(jar, NEW_HIRE_UNIONID));
+
+				expect(fetchOrg).toHaveBeenCalledTimes(1);
+				const rows = await auditRows();
+				expect(rows.map((r) => r.action).sort()).toEqual(
+					[AUDIT_ACTIONS.authLogin, AUDIT_ACTIONS.syncTrigger].sort(),
+				);
+				expect(
+					rows.find((r) => r.action === AUDIT_ACTIONS.syncTrigger),
+				).toMatchObject({
+					status: "success",
+					actorType: "dingtalk",
+					actorId: NEW_HIRE_UNIONID,
+					targetId: DINGTALK_APP_KEY,
+					details: { summary: SYNC_TRIGGER_SUMMARY.refreshed },
+				});
+			});
+		});
 	});
 
 	it("JWKS 端点只暴露公钥，绝不能泄露私钥参数", async () => {
@@ -424,18 +648,6 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 					...(authorization ? { authorization } : {}),
 				},
 			});
-
-		// 回到「从没同步过」：清空组织同步（冷却、租约跟着清掉）与 token 的两级缓存
-		async function resetOwnSync() {
-			tokenError = null;
-			orgFailure = null;
-			await resetOrgSync(deps.db);
-			await deps.db
-				.delete(appSecrets)
-				.where(eq(appSecrets.key, accessTokenKey(DINGTALK_APP_KEY)));
-			// 不匹配的 badToken：条件删除不命中，只清进程内
-			await invalidateAccessToken(deps.db, DINGTALK_APP_KEY, "itest-clear");
-		}
 
 		async function cleanup() {
 			await resetOwnSync();

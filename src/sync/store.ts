@@ -355,8 +355,9 @@ export interface Member {
 }
 
 /**
- * ⚠️ OIDC 准入的唯一判据：自有应用同步成功过、这个人是当前成员。已离开的、只出现在别的
- * 应用数据里的，都查不到。一次登录会调好几次 `findAccount`，走 unionid 的部分唯一索引。
+ * ⚠️ OIDC 准入里同步结果那一半（另一半是钉钉实时校验，组合在 `~/admission`）：自有应用
+ * 同步成功过、这个人是当前成员。已离开的、只出现在别的应用数据里的，都查不到。一次登录会调
+ * 好几次 `findAccount`，走 unionid 的部分唯一索引。
  */
 export async function findMember(
 	db: Database,

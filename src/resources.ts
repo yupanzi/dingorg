@@ -25,7 +25,7 @@ export function accessTokenKey(appKey: string): string {
 /** 审计动作串，`<实体>.<动词>`，首段冗余进 `target_type` 列 */
 export const AUDIT_ACTIONS = {
 	authLogin: "auth.login",
-	/** 不是自有同步结果里的当前成员，或扫码回调本身无效（此时 actor 为空） */
+	/** 准入不过（原因见 `~/admission` 的 `RejectReason`），或扫码回调本身无效（此时 actor 为空） */
 	authReject: "auth.reject",
 
 	orgListUsers: "org.listUsers",

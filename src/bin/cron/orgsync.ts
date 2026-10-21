@@ -4,7 +4,8 @@ import { closeDeps } from "~/deps";
 import {
 	SYNC_COOLDOWN_MS,
 	SYNC_LEASE_MS,
-	SYNC_TRIGGER_SUMMARY,
+	type SyncTriggerResult,
+	syncTriggerAudit,
 } from "~/domain/sync";
 import { loadOrgSyncEnv, ownDingtalkApp } from "~/env";
 import { logger } from "~/log";
@@ -20,7 +21,7 @@ import { readSyncState } from "~/sync/store";
 /**
  * 每日同步自有应用的组织数据：直接调 `syncOrg`，与 `POST /api/v1/sync` 同一份实现（租约、冷却、
  * 失败记录都在里面）。不经 HTTP，所以不要凭证：能拿着这个 Secret 起 Pod 就是它的授权。
- * 挂了是静默的（离职的人一直能登录），Job 失败要配告警。
+ * 挂了是静默的（REST 名单停在旧的，钉钉实时校验不可用时离职的人一直能登录），Job 失败要配告警。
  */
 
 // ⚠️ 必须长于冷却，否则重试撞在冷却期里白跑
@@ -31,23 +32,21 @@ const BUSY_POLL_MS = 5_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** 审计与 REST 面同一套说法：同步抛错才算 failure */
 async function syncAndAudit(deps: SyncDeps): Promise<SyncResult> {
-	const audit = (status: "success" | "failure", summary: string) =>
+	const audit = (r: SyncTriggerResult) =>
 		recordAudit(deps.db, {
 			action: AUDIT_ACTIONS.syncTrigger,
-			status,
 			actorType: "system",
 			targetId: deps.dingtalk.clientId,
-			details: { summary },
+			...syncTriggerAudit(r),
 		});
 
 	try {
 		const result = await syncOrg(deps);
-		await audit("success", SYNC_TRIGGER_SUMMARY[result.outcome]);
+		await audit(result.outcome);
 		return result;
 	} catch (err) {
-		await audit("failure", SYNC_TRIGGER_SUMMARY.failed);
+		await audit("failed");
 		throw err;
 	}
 }

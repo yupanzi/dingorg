@@ -29,16 +29,23 @@ API key，同放在 `AUTH_JSON` 一个数组里、按 `type` 区分，两者互�
 一个常驻进程 + 三个跑完即退的任务（migrate、oidcpurge、orgsync），共用一个镜像。
 
 组织同步只有一份 —— 自有应用（`DINGTALK_APP_KEY`）的：一行同步状态加部门、成员、成员-部门三张
-镜像表，每轮在一个事务里整体换新。它既是 REST 出口的数据，也是 **OIDC 准入的唯一依据**（当前成员才
-能登录）。同步只有一份实现，两个入口，常驻进程自己不定时同步：
+镜像表，每轮在一个事务里整体换新。它是 REST 出口的数据，也是 OIDC 准入的一半。
 
-- 每日 cron orgsync（默认 UTC 04:00）直接调同步，不经 HTTP、不需要凭证。离职生效、新人可登录
-  的窗口因此**最长约 24 小时**。
+**OIDC 准入**：同步结果里的当前成员，**且登录时钉钉实时确认是企业内部员工**（`topapi/user/getbyunionid`
+的 `contact_type` 为 0；外部联系人、查无此人都拒）。离职当下就登录不了，不用等同步。钉钉实时校验
+不可用（故障、没开权限点）时只看同步结果，同步结果里也只有内部员工，只是离职生效退回到等下一次同步；
+新人也不会在登录时补同步，要等下一次同步才进得来。
+
+同步只有一份实现，三个入口，常驻进程自己不定时同步：
+
+- 每日 cron orgsync（默认 UTC 04:00）直接调同步，不经 HTTP、不需要凭证。
 - `POST /api/v1/sync`：持 API key 的调用方手动触发。
+- **登录时补同步**：钉钉确认是员工、同步结果里却没有（新人）时当场同步一次再判，新人不用等。只有
+  钉钉确认是员工才会触发，外部人员扫码不会；冷却 1 分钟，现有数据属于别的钉钉应用时不补。
 - **多副本安全**：同一时刻只有一个副本（或任务）在拉钉钉，靠同步状态行上的租约；撞上的一方不外呼，
   直接用现有数据。重复同步是幂等的：钉钉没变，结果就不变。
 - 这一轮里不在了的成员（离职、移出可见范围）**标记离开、整行保留**，不再能登录、也不出现在 API 里。
-- ⚠️ **空库时谁都登录不进来**：K8s 部署时 hook 会跑一次，本地要手动 `pnpm orgsync`。
+- K8s 部署时 hook 会跑一次，本地建议手动 `pnpm orgsync`。
 - 读的时候不按时间过期：从没同步成功过才当场同步一次，之后原样返回。
 
 ## 快速开始
@@ -55,7 +62,8 @@ pnpm -s auth:oidc --name local --redirect-uri http://localhost:9000/callback
 pnpm db:migrate
 pnpm dev          # http://localhost:3080
 
-# 4. 同步一次自有应用的组织数据（不同步的话谁都登录不进来；直连库与钉钉，不依赖服务在跑）
+# 4. 同步一次自有应用的组织数据（REST 面要它；钉钉实时校验不可用时，空库谁都登录不进来）
+#    直连库与钉钉，不依赖服务在跑
 pnpm orgsync
 ```
 
@@ -78,6 +86,7 @@ curl -s -H "Authorization: Bearer $API_KEY" localhost:3080/api/v1/sync | jq   # 
 | **本服务的出口 IP 白名单** | 开发配置 | ⚠️ 组织拉取报 `60020`，但 `gettoken` 正常 —— 极易误判成凭证问题 |
 | **`Contact.User.Read`** 权限点 | 权限管理 | ⚠️ 扫码后返回 `AccessTokenPermissionDenied` |
 | 通讯录**个人信息**读权限 | 权限管理 | ⚠️ unionId 与企业邮箱**静默缺失**：所有人都没有 email，缺 unionId 的人登录不了（它是 `sub`）|
+| 通讯录**成员信息**读权限 | 权限管理 | ⚠️ 登录时的实时校验（`getbyunionid`）一律失败，**静默退回只看同步结果**：离职要等下一次同步才生效，新人不补同步、要等下一次同步才进得来；日志里每次校验一条 warn（扫码登录是回调与 resume 各一条） |
 | 回调域名 | 登录与分享 | 填 `PUBLIC_ORIGIN`（本地 `http://localhost:3080`），改它时同步改 |
 
 ## 下游如何接入（OIDC）
@@ -113,7 +122,7 @@ pnpm -s auth:oidc --name preview --redirect-uri https://pr-1.preview.example.com
   `.*` 跨过 host。能列举的地址就用 `redirectUris`。
 - client 凭证与钉钉无关：`id` 必须是 UUID，`secret` 不得等于 `DINGTALK_APP_SECRET`。手写的
   secret 只能含 `A-Z a-z 0-9 - _ . ~`（标准 base64 的 `+ / =` 不行：Basic 认证会做 form 解码）。
-- ⚠️ **每个下游都能登录全组织的人**：准入只看「在不在自有应用的通讯录里」。谁能用哪个下游由
+- ⚠️ **每个下游都能登录全组织的人**：准入只看「是不是自有应用通讯录里的内部员工」。谁能用哪个下游由
   下游自己管（authentik 的 Policy）；直连本服务又不做授权的下游，全组织都能登录。
 - 不签发 refresh token。
 
@@ -133,8 +142,11 @@ id_token 与 userinfo 都给出这些，**集合是固定的**：
 
 ### 撤销访问的时效
 
-把人从钉钉通讯录移除后，下一次同步（**最长约 24 小时**）把他标记为离开，之后新的登录被拒；但
-**未过期的 access_token（1 小时）仍然可用**，下游自己的会话更在本系统之外。要立即切断：
+把人从钉钉通讯录移除后，**新的登录当下就被拒**：扫码时与复用本服务登录会话时都实时问钉钉。钉钉
+实时校验不可用时，要等下一次同步（**最长约 24 小时**）把他标记为离开。
+
+管不到的：已经签发给下游的 id_token（1 小时），以及**下游自己的会话**。userinfo 只看同步结果，
+同步之前拿着未过期 access_token（1 小时）的人还能调。要立即切断：
 
 1. 手动触发一次同步：`kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`，
    或 `curl -X POST -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/sync`（任一 API key）；
@@ -290,15 +302,16 @@ chart 第一次发布后要到 GitHub 的 package 设置里改成 Public，否�
   IP 还没进自有应用的白名单）会让这次 release 标成失败；修好后重跑：
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。关掉：`syncOnDeploy: false`。
 - ⚠️ **改了 Secret 之后必须 bump `values.secretVersion`**，否则常驻进程手里还是旧值。
-- **`orgsync` 失败要配告警**：它挂了的症状是静默的 —— 离职的人一直能登录。它直连库与钉钉
+- **`orgsync` 失败要配告警**：它挂了的症状是静默的 —— REST 名单停在旧的，钉钉实时校验不可用时
+  离职的人一直能登录。它直连库与钉钉
   （与 `POST /api/v1/sync` 同一份实现），失败隔 2 分钟重试、共 3 次，原因在它的日志里，也记进
   状态端点的 `error`。撞上别处正在同步（如部署 hook 与 cron 重叠）时等它结束，不算失败。schedule 在
   `cronjobs.orgsync.schedule` 改。
 - ⚠️ **换了 `DINGTALK_APP_KEY` 要显式同步一次**：旧应用的数据不会被自动接管（读的时候回 503）。
   upgrade 的 hook 会做；`helm rollback` 没有 hook，回滚后手动
   `kubectl create job --from=cronjob/dingorg-orgsync <任务名> -n <ns>`。
-- `POST /api/v1/sync` 大组织可能要几十秒，Ingress 的 `proxy-read-timeout`（nginx 默认 60 秒）要留够，
-  写在 `ingress.annotations`。
+- `POST /api/v1/sync` 与新人扫码时的补同步（回调等它拉完）大组织可能要几十秒，Ingress 的读超时
+  （nginx `proxy-read-timeout`、ALB 空闲超时都默认 60 秒）要留够，写在 `ingress.annotations`。
 - **本服务的出口 IP 要进自有钉钉应用的白名单**，换出口等于同时打断登录与组织同步。
 
 ## 版本与发布

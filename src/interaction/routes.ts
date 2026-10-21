@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type Provider from "oidc-provider";
+import { admit, REJECT_SUMMARY } from "~/admission";
 import { type AuditEntry, recordAudit } from "~/audit/record";
 import { pickAuthEntries } from "~/domain/config-json";
+import { syncTriggerAudit } from "~/domain/sync";
 import { AUDIT_ACTIONS } from "~/resources";
-import { findMember } from "~/sync/store";
 import type { Deps } from "../deps";
 import { getContactUser, getUserAccessToken } from "../dingtalk/client";
 import { type IdpEnv, ownDingtalkApp } from "../env";
@@ -37,6 +38,7 @@ export function registerInteractionRoutes(
 	env: IdpEnv,
 	provider: Provider,
 ): void {
+	const dingtalk = ownDingtalkApp(env);
 	// 审计记 client 的 name：UUID 人看不出是哪个下游
 	const clientNames = new Map(
 		pickAuthEntries(env.AUTH_JSON, "oidc").map((c) => [c.id, c.name]),
@@ -144,10 +146,7 @@ export function registerInteractionRoutes(
 
 			let unionId: string;
 			try {
-				const userToken = await getUserAccessToken(
-					ownDingtalkApp(env),
-					query.code,
-				);
+				const userToken = await getUserAccessToken(dingtalk, query.code);
 				const contact = await getContactUser(userToken.accessToken);
 				unionId = contact.unionId;
 			} catch (err) {
@@ -163,13 +162,26 @@ export function registerInteractionRoutes(
 				);
 			}
 
-			// ⚠️ 与 `~/oidc/account` 同一条判据：自有应用同步结果里的当前成员
-			const member = await findMember(deps.db, env.DINGTALK_APP_KEY, unionId);
-
-			// 不自动建用户。已离开的与从来不在的都拒，文案不区分
-			if (!member) {
+			// 与 `findAccount` 同一个 `admit`。新人在这里补同步，不自动建用户
+			const verdict = await admit(
+				{ db: deps.db, dingtalk, log: req.log },
+				unionId,
+				"realtime_sync",
+			);
+			// actor 是触发补同步的这个人
+			if (verdict.synced) {
+				await recordAudit(deps.db, {
+					action: AUDIT_ACTIONS.syncTrigger,
+					actorType: "dingtalk",
+					actorId: unionId,
+					targetId: dingtalk.clientId,
+					...syncTriggerAudit(verdict.synced),
+					...source,
+				});
+			}
+			if (!verdict.admitted) {
 				return deny(
-					"不在组织通讯录的账号尝试登录（或已离职）",
+					REJECT_SUMMARY[verdict.reason],
 					[
 						403,
 						"账号不在本组织",
@@ -178,6 +190,7 @@ export function registerInteractionRoutes(
 					{ actorId: unionId, ...target },
 				);
 			}
+			const { member } = verdict;
 
 			let grant = details.grantId
 				? await provider.Grant.find(details.grantId)

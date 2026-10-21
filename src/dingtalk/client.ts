@@ -14,15 +14,18 @@ export interface DingtalkCredentials {
 interface DingtalkErrorInit {
 	/** 旧版 oapi 的数字 errcode */
 	errcode?: number;
+	/** 旧版 oapi 的 `sub_code`：errcode 88 时真正的原因在它这里 */
+	subCode?: string;
 	/** 新版 api 的字符串错误码 */
 	code?: string;
 	status?: number;
 	endpoint?: string;
 }
 
-/** ⚠️ code / status 必须是结构化字段：`isTokenError` 靠它们判 token 失效，REST 面原样回给调用方 */
+/** ⚠️ 错误码与 status 必须是结构化字段：`isTokenError` 靠它们判 token 失效，REST 面原样回给调用方 */
 export class DingtalkError extends Error {
 	readonly errcode?: number;
+	readonly subCode?: string;
 	readonly code?: string;
 	readonly status?: number;
 	readonly endpoint?: string;
@@ -31,6 +34,7 @@ export class DingtalkError extends Error {
 		super(message);
 		this.name = "DingtalkError";
 		this.errcode = init.errcode;
+		this.subCode = init.subCode;
 		this.code = init.code;
 		this.status = init.status;
 		// ⚠️ 剥掉 query：旧版 oapi 的 access_token 在 query 里，而日志会带出错误的全部字段
@@ -42,12 +46,20 @@ export class DingtalkError extends Error {
 const TOKEN_ERRCODES = new Set([40014, 42001]);
 
 /**
+ * ⚠️ `/topapi/*` 不把 token 的错放在顶层：回 errcode 88，原因在字符串 `sub_code`，如
+ * `{"errcode":88,"sub_code":"40014","errmsg":"ding talk error[subcode=40014,…]"}`
+ */
+const SUB_CODE_ERRCODE = 88;
+
+/**
  * token 本身失效（重试前必须先清缓存）。⚠️ 别按 code 含 `AccessToken` 判：
  * `AccessTokenPermissionDenied` 是缺权限点（403），重试永远不会好。
  */
 export function isTokenError(err: unknown): boolean {
 	if (!(err instanceof DingtalkError)) return false;
-	if (err.errcode !== undefined && TOKEN_ERRCODES.has(err.errcode)) return true;
+	const code =
+		err.errcode === SUB_CODE_ERRCODE ? Number(err.subCode) : err.errcode;
+	if (code !== undefined && TOKEN_ERRCODES.has(code)) return true;
 	return err.status === 401;
 }
 
@@ -87,10 +99,15 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 			endpoint: url,
 		});
 	}
-	const json = (await res.json()) as T & { errcode?: number; errmsg?: string };
+	const json = (await res.json()) as T & {
+		errcode?: number;
+		errmsg?: string;
+		sub_code?: string | number;
+	};
 	if (json.errcode !== undefined && json.errcode !== 0) {
 		throw new DingtalkError(json.errmsg ?? "dingtalk error", {
 			errcode: json.errcode,
+			subCode: json.sub_code === undefined ? undefined : String(json.sub_code),
 			status: res.status,
 			endpoint: url,
 		});
@@ -227,6 +244,26 @@ export async function listDeptUsersV2(
 		cursor = json.result.next_cursor ?? 0;
 	}
 	return out;
+}
+
+/** `topapi/user/getbyunionid` 查无此人（含已离职） */
+export const USER_NOT_FOUND_ERRCODE = 60121;
+
+/**
+ * 按 unionid 实时查本企业通讯录。`contact_type`：0 企业内部员工、1 企业外部联系人（也查得到）；
+ * 文档的表格写 Number、返回示例写 "0"。
+ */
+export async function getUserByUnionId(
+	accessToken: string,
+	unionid: string,
+): Promise<{ userid: string; contact_type: number | string }> {
+	const json = await postJson<{
+		result: { userid: string; contact_type: number | string };
+	}>(
+		`/topapi/user/getbyunionid?access_token=${encodeURIComponent(accessToken)}`,
+		{ unionid },
+	);
+	return json.result;
 }
 
 /**

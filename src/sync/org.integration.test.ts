@@ -2,7 +2,6 @@ import { isNotNull } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb } from "~/db";
 import { orgSync, orgUsers } from "~/db/schema";
-import { invalidateAccessToken } from "~/dingtalk/access-token";
 import { DingtalkError } from "~/dingtalk/client";
 import type { MemberFields } from "~/domain/org-sync";
 import { logger } from "~/log";
@@ -21,8 +20,9 @@ import {
 
 /**
  * 钉住：读不外呼；同步进程内合并、跨副本靠租约、有冷却；失败不动已有数据且整轮回滚；每种失败
- * 都记下来；别的应用的数据懒加载不接管。mock `fetchOrg` 与 token 层（后者有自己的测试），
- * PG 用真的：租约与条件写只在真实存储上成立。
+ * 都记下来；别的应用的数据懒加载不接管。mock `fetchOrg` 与 token 层（`withAccessToken`：token
+ * 失效时的清理由它的测试钉住，这里只钉拉取确实在它里面），PG 用真的：租约与条件写只在真实
+ * 存储上成立。
  */
 const url = process.env.DATABASE_URL;
 const maybe = url ? describe : describe.skip;
@@ -34,13 +34,21 @@ let nextDelayMs = 0;
 let nextMembers: MemberFields[] | null = null;
 let tokenCount = 0;
 let nextTokenError: Error | null = null;
+/** 经过 `withAccessToken` 的错：它只清得掉在它里面抛出的 token 失效 */
+const seenByWrapper: unknown[] = [];
 vi.mock("~/dingtalk/access-token", () => ({
-	getAccessToken: vi.fn(async () => {
-		tokenCount += 1;
-		if (nextTokenError) throw nextTokenError;
-		return "itest-token";
-	}),
-	invalidateAccessToken: vi.fn(async () => {}),
+	withAccessToken: vi.fn(
+		async (_db: unknown, _cred: unknown, fn: (t: string) => unknown) => {
+			tokenCount += 1;
+			if (nextTokenError) throw nextTokenError;
+			try {
+				return await fn("itest-token");
+			} catch (err) {
+				seenByWrapper.push(err);
+				throw err;
+			}
+		},
+	),
 }));
 vi.mock("~/dingtalk/fetch-org", () => ({
 	fetchOrg: vi.fn(async () => {
@@ -76,7 +84,7 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 		fetchCount = 0;
 		tokenCount = 0;
 		nextTokenError = null;
-		vi.mocked(invalidateAccessToken).mockClear();
+		seenByWrapper.length = 0;
 		nextError = null;
 		nextDelayMs = 0;
 		nextMembers = null;
@@ -213,16 +221,15 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 		expect(tokenCount).toBe(1);
 	});
 
-	// `invalidateAccessToken` 唯一的生产调用方：少了它坏 token 一直留在缓存里
-	it("拉取时钉钉说 token 失效：丢掉这个 token", async () => {
-		nextError = new DingtalkError("不合法的access_token", { errcode: 40014 });
-		await expect(syncOrg(deps)).rejects.toThrow();
+	// 先从 wrapper 里拿出 token 再拉，类型照过，token 失效就再也清不掉
+	it("拉取在 withAccessToken 里：钉钉的错经过它", async () => {
+		nextError = new DingtalkError("不合法的access_token", {
+			errcode: 88,
+			subCode: "40014",
+		});
+		await expect(syncOrg(deps)).rejects.toBe(nextError);
 
-		expect(vi.mocked(invalidateAccessToken)).toHaveBeenCalledWith(
-			db,
-			APP,
-			"itest-token",
-		);
+		expect(seenByWrapper).toEqual([nextError]);
 	});
 
 	it("error 列不存非钉钉错误的原文", async () => {

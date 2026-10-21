@@ -1,12 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { Database } from "~/db";
-import { getAccessToken, invalidateAccessToken } from "~/dingtalk/access-token";
-import {
-	type DingtalkCredentials,
-	describeFailure,
-	isTokenError,
-} from "~/dingtalk/client";
+import { withAccessToken } from "~/dingtalk/access-token";
+import { type DingtalkCredentials, describeFailure } from "~/dingtalk/client";
 import { fetchOrg } from "~/dingtalk/fetch-org";
 import { SYNC_BUSY_RETRY_MS, type SyncOutcome } from "~/domain/sync";
 import type { Log } from "~/log";
@@ -106,11 +102,7 @@ export function syncOrg(deps: SyncDeps): Promise<SyncResult> {
 	return p;
 }
 
-/**
- * 有自有数据就原样返回（不管多旧），从没同步成功过才当场同步一次。
- * ⚠️ 现有数据属于别的应用时不接管：滚动更新换 `DINGTALK_APP_KEY` 时新旧 Pod 会来回覆盖
- * 对方的名单，而准入不会触发同步去修。接管只走显式同步（orgsync、部署 hook、POST）。
- */
+/** 有自有数据就原样返回（不管多旧），从没同步成功过才当场同步一次 */
 export async function getOrSyncOrg<T>(
 	deps: SyncDeps,
 	read: OrgReader<T>,
@@ -119,14 +111,25 @@ export async function getOrSyncOrg<T>(
 	const hit = await read(deps.db, appKey);
 	if (hit) return hit;
 
-	if ((await readSyncState(deps.db, appKey)).otherAppSynced) {
+	if ((await syncOwnOrg(deps)) === null) {
 		throw new NotSyncedError("other_app", null);
 	}
-	await syncOrg(deps);
 	const after = await read(deps.db, appKey);
 	if (after) return after;
 	// syncOrg 返回即当时有自有数据，读不到只能是之后又有别的应用的一轮落了库
 	throw new NotSyncedError("other_app", null);
+}
+
+/**
+ * 隐式同步（读路径的懒加载、登录补同步）的唯一入口：冷却、租约、单飞照旧，现有数据属于别的
+ * 应用时返回 null、不外呼。⚠️ 隐式同步不接管：滚动更新换 `DINGTALK_APP_KEY` 时新旧 Pod 会来回
+ * 覆盖对方的名单。接管只走显式同步（orgsync、部署 hook、POST）。
+ */
+export async function syncOwnOrg(deps: SyncDeps): Promise<SyncOutcome | null> {
+	if ((await readSyncState(deps.db, deps.dingtalk.clientId)).otherAppSynced) {
+		return null;
+	}
+	return (await syncOrg(deps)).outcome;
 }
 
 async function doSync(deps: SyncDeps): Promise<SyncResult> {
@@ -138,19 +141,13 @@ async function doSync(deps: SyncDeps): Promise<SyncResult> {
 		return { outcome: state.syncing ? "busy" : "cooldown", state };
 	}
 
-	let accessToken: string | undefined;
 	let result: WriteResult;
 	try {
-		// 抢到租约之后才申请：冷却期内与别处在拉时都不申请。在 try 里：token 申请失败
+		// 抢到租约之后才申请 token：冷却期内与别处在拉时都不申请。在 try 里：token 申请失败
 		// （secret 错、钉钉故障）也要进 `error`，状态端点才报得出来
-		accessToken = await getAccessToken(deps.db, deps.dingtalk);
-		result = await writeOrgSync(deps.db, lease, await fetchOrg(accessToken));
+		const fetched = await withAccessToken(deps.db, deps.dingtalk, fetchOrg);
+		result = await writeOrgSync(deps.db, lease, fetched);
 	} catch (err) {
-		// ⚠️ `invalidateAccessToken` 唯一的生产调用方。不清的话坏 token 留在进程与 PG
-		// 两级缓存里，可自愈的故障变成必须重启
-		if (accessToken && isTokenError(err)) {
-			await invalidateAccessToken(deps.db, appKey, accessToken);
-		}
 		await recordSyncFailure(deps.db, lease, describeFailure(err));
 		throw err;
 	}
