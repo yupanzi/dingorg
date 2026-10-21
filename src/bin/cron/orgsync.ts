@@ -7,7 +7,7 @@ import {
 	type SyncTriggerResult,
 	syncTriggerAudit,
 } from "~/domain/sync";
-import { loadOrgSyncEnv, ownDingtalkApp } from "~/env";
+import { loadOrgSyncEnv, ownOrgSource } from "~/env";
 import { logger } from "~/log";
 import { AUDIT_ACTIONS } from "~/resources";
 import {
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
 	const env = loadOrgSyncEnv();
 	const deps: SyncDeps = {
 		db: createDb(env.DATABASE_URL, { maxConnections: 2 }),
-		dingtalk: ownDingtalkApp(env),
+		...ownOrgSource(env),
 		log: logger,
 	};
 	const appKey = env.DINGTALK_APP_KEY;

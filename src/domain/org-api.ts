@@ -24,13 +24,13 @@ export interface OrgApiUserDept {
  */
 export interface OrgApiUser {
 	/**
-	 * 企业邮箱的 local part，没有则取显示名括号前的部分；当前成员内唯一。会随企业邮箱或
+	 * `email` 的 local part，没有则取显示名括号前的部分；当前成员内唯一。会随 `email` 或
 	 * 显示名变化，永不变的锚点是 `dingtalk.unionid`
 	 */
 	userName: string;
 	/** 形如 `Zhangsan(张三)` */
 	displayName: string;
-	/** 企业邮箱（小写），没有就是 null，不推导 */
+	/** 企业邮箱，或兜底域名下的「邮箱」（小写，规则在 `~/domain/org-identity`）；没有就是 null，不推导 */
 	email: string | null;
 	depts: OrgApiUserDept[];
 	/** 职务全称，一人多职时多条 */

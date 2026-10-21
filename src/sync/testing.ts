@@ -72,7 +72,12 @@ export async function seedOrgSync(
 	await new Promise((r) => setTimeout(r, 2));
 	const { rows } = await db.execute<{ now: string }>(sql`select now() as now`);
 	const startedAt = new Date(rows[0]?.now ?? Date.now());
-	return await writeOrgSync(db, { appKey, holder: "seed", startedAt }, fetched);
+	return await writeOrgSync(
+		db,
+		{ appKey, holder: "seed", startedAt },
+		fetched,
+		[],
+	);
 }
 
 /** 把上一次尝试（与成功那轮，若有）拨到 `ms` 之前：冷却按 DB 时钟算，拨也用 DB 时钟 */

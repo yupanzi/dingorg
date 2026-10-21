@@ -126,6 +126,7 @@ export async function writeOrgSync(
 	db: Database,
 	lease: SyncLease,
 	fetched: FetchedOrg,
+	emailFallbackDomains: readonly string[],
 ): Promise<WriteResult> {
 	return await db.transaction(async (tx) => {
 		// 锁住状态行：并发写入者在这里排队，后面的判定与读都以它为准
@@ -143,6 +144,7 @@ export async function writeOrgSync(
 		const { data, skipped } = buildOrgSync(
 			fetched,
 			state.own ? await readPrevOwners(tx) : undefined,
+			emailFallbackDomains,
 		);
 
 		// 删除顺序跟着外键走（外键不级联）

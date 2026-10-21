@@ -1,13 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { Deps } from "~/deps";
-import type { DingtalkCredentials } from "~/dingtalk/client";
 import type {
 	OrgApiDeptsResponse,
 	OrgApiUsersResponse,
 } from "~/domain/org-api";
 import { AUDIT_ACTIONS } from "~/resources";
-import { getOrSyncOrg } from "~/sync/org";
+import { getOrSyncOrg, type OrgSource } from "~/sync/org";
 import { type OrgReader, readOrgDepartments, readOrgUsers } from "~/sync/store";
 
 import { requireCaller } from "./guard";
@@ -16,11 +15,11 @@ import { requireCaller } from "./guard";
 export function registerOrgRoutes(
 	app: FastifyInstance,
 	deps: Deps,
-	dingtalk: DingtalkCredentials,
+	orgSource: OrgSource,
 ): void {
 	const load = <T>(req: FastifyRequest, read: OrgReader<T>) => {
 		requireCaller(req);
-		return getOrSyncOrg({ db: deps.db, dingtalk, log: req.log }, read);
+		return getOrSyncOrg({ db: deps.db, ...orgSource, log: req.log }, read);
 	};
 
 	app.get(

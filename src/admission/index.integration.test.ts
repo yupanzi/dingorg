@@ -64,6 +64,7 @@ maybe("准入 admit (需要 DATABASE_URL)", () => {
 	const deps: AdmissionDeps = {
 		db,
 		dingtalk: { clientId: APP, clientSecret: "x" },
+		emailFallbackDomains: [],
 		log: logger,
 	};
 

@@ -8,6 +8,7 @@ export interface DingtalkUserFields {
 	/** 类型上必有，但运行时不校验：缺了只能跳过这个人，不能让整轮同步失败 */
 	name: string;
 	org_email?: string | null;
+	email?: string | null;
 }
 
 export interface NormalizedIdentity {
@@ -16,14 +17,18 @@ export interface NormalizedIdentity {
 }
 
 /**
- * ⚠️ email 只认 `org_email`：它以 `email_verified: true` 发出去。别加回钉钉的 `email`
- * （管理员手填、未验证），也别按姓名拼域名（拼出的地址不一定存在）。
- * userName：有企业邮箱取 local part，没有取显示名括号前的部分；撞名由 `pickOwner` 裁决。
+ * ⚠️ email 先认 `org_email`；它缺失或不合法时，钉钉的 `email`（名片上的「邮箱」）域名在
+ * `emailFallbackDomains` 里才兜底。两者都以 `email_verified: true` 发出去：企业邮箱不在钉钉上的
+ * 组织，`org_email` 同样是管理员手填的；白名单挡的是填进「邮箱」的私人地址，别放宽成任意域名。
+ * 也别按姓名拼域名（拼出的地址不一定存在）。
+ * userName：有 email 取 local part，没有取显示名括号前的部分；撞名由 `pickOwner` 裁决。
  */
 export function normalizeIdentity(
 	user: DingtalkUserFields,
+	emailFallbackDomains: readonly string[],
 ): NormalizedIdentity | null {
-	const email = toEmail(user.org_email);
+	const email =
+		toEmail(user.org_email) ?? fallbackEmail(user.email, emailFallbackDomains);
 	const userName = email
 		? toUserName(email)
 		: splitDisplayName(user.name ?? "").toLowerCase();
@@ -35,6 +40,16 @@ export function normalizeIdentity(
 function toEmail(raw: string | null | undefined): string | null {
 	const email = raw?.trim().toLowerCase();
 	return email && /^[^@\s]+@[^@\s]+$/.test(email) ? email : null;
+}
+
+// 整个域名相等才算（不分大小写）：白名单写 corp.com 不放行 mail.corp.com
+function fallbackEmail(
+	raw: string | null | undefined,
+	domains: readonly string[],
+): string | null {
+	const email = toEmail(raw);
+	const host = email?.slice(email.indexOf("@") + 1);
+	return host && domains.some((d) => d.toLowerCase() === host) ? email : null;
 }
 
 export function toUserName(raw: string): string {

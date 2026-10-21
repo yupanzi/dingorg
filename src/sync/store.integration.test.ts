@@ -86,8 +86,13 @@ maybe("组织同步的存储 (需要 DATABASE_URL)", () => {
 			await expireLease();
 			const second = await claim("h2");
 
-			await writeOrgSync(db, second, fetchedOrg([member("u2")]));
-			const late = await writeOrgSync(db, first, fetchedOrg([member("u1")]));
+			await writeOrgSync(db, second, fetchedOrg([member("u2")]), []);
+			const late = await writeOrgSync(
+				db,
+				first,
+				fetchedOrg([member("u1")]),
+				[],
+			);
 
 			expect(late.written).toBe(false);
 			expect(await currentIds()).toEqual(["u2"]);
@@ -101,7 +106,7 @@ maybe("组织同步的存储 (需要 DATABASE_URL)", () => {
 			await recordSyncFailure(db, first, "钉钉挂了");
 			expect(await leaseHolder(db)).toBe("h2");
 
-			await writeOrgSync(db, first, fetchedOrg([member("u1")]));
+			await writeOrgSync(db, first, fetchedOrg([member("u1")]), []);
 			expect(await leaseHolder(db)).toBe("h2");
 		});
 	});
@@ -223,7 +228,7 @@ maybe("组织同步的存储 (需要 DATABASE_URL)", () => {
 			],
 		};
 		await seedOrgSync(db, APP, fetched);
-		const { data } = buildOrgSync(fetched, undefined);
+		const { data } = buildOrgSync(fetched, undefined, []);
 
 		expect((await readOrgUsers(db, APP))?.items).toEqual(data.users);
 		expect((await readOrgDepartments(db, APP))?.items).toEqual(

@@ -1,8 +1,8 @@
 import { z } from "zod";
 
-import type { DingtalkCredentials } from "~/dingtalk/client";
 import { authJsonSchema } from "~/domain/config-json";
 import { LOG_LEVELS } from "~/log";
+import type { OrgSource } from "~/sync/org";
 
 const database = {
 	DATABASE_URL: z.url(),
@@ -17,6 +17,30 @@ const logging = {
 const dingtalkApp = {
 	DINGTALK_APP_KEY: z.string().min(1),
 	DINGTALK_APP_SECRET: z.string().min(1),
+};
+
+/**
+ * ⚠️ 凡是会跑组织同步的进程（常驻服务、orgsync、部署 hook）必须同值：否则 email 与 userName
+ * 在两轮同步之间来回变，下游按它关联的账号跟着错位。
+ */
+const orgIdentity = {
+	/** 「邮箱」兜底的域名白名单，规则见 `~/domain/org-identity`。逗号分隔，不设 = 不兜底 */
+	EMAIL_FALLBACK_DOMAINS: z
+		.string()
+		.default("")
+		.transform((raw) =>
+			raw
+				.split(",")
+				.map((d) => d.trim())
+				.filter(Boolean),
+		)
+		.pipe(
+			z.array(
+				z
+					.string()
+					.regex(z.regexes.domain, "只写域名，如 example.com；多个用逗号分隔"),
+			),
+		),
 };
 
 /**
@@ -37,16 +61,23 @@ export const orgSyncEnvSchema = z.object({
 	...logging,
 	...database,
 	...dingtalkApp,
+	...orgIdentity,
 });
 export type OrgSyncEnv = z.infer<typeof orgSyncEnvSchema>;
 
-/** 两个字段都是 string，写反了类型查不出：从 env 取凭证只走这里 */
-export function ownDingtalkApp(
-	env: Pick<OrgSyncEnv, "DINGTALK_APP_KEY" | "DINGTALK_APP_SECRET">,
-): DingtalkCredentials {
+/** 凭证的两个字段都是 string，写反了类型查不出：从 env 取凭证只走这里 */
+export function ownOrgSource(
+	env: Pick<
+		OrgSyncEnv,
+		"DINGTALK_APP_KEY" | "DINGTALK_APP_SECRET" | "EMAIL_FALLBACK_DOMAINS"
+	>,
+): OrgSource {
 	return {
-		clientId: env.DINGTALK_APP_KEY,
-		clientSecret: env.DINGTALK_APP_SECRET,
+		dingtalk: {
+			clientId: env.DINGTALK_APP_KEY,
+			clientSecret: env.DINGTALK_APP_SECRET,
+		},
+		emailFallbackDomains: env.EMAIL_FALLBACK_DOMAINS,
 	};
 }
 
@@ -55,6 +86,7 @@ export const idpEnvSchema = z
 		...logging,
 		...database,
 		...dingtalkApp,
+		...orgIdentity,
 
 		/**
 		 * 对外可达的 origin，issuer 与发给钉钉的回调地址都由它拼出（`~/oidc/mount` 的

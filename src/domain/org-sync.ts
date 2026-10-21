@@ -51,6 +51,7 @@ export interface PrevOwner {
 export function buildOrgSync(
 	fetched: FetchedOrg,
 	prevOwners: readonly PrevOwner[] | undefined,
+	emailFallbackDomains: readonly string[],
 ): BuildResult {
 	const deptName = new Map(fetched.departments.map((d) => [d.id, d.name]));
 	const skipped: string[] = [];
@@ -73,7 +74,7 @@ export function buildOrgSync(
 
 	const byUserName = new Map<string, OrgApiUser[]>();
 	for (const { member, depts } of merged.values()) {
-		const identity = normalizeIdentity(member);
+		const identity = normalizeIdentity(member, emailFallbackDomains);
 		if (!identity) {
 			skipped.push(`${member.name}(${member.userid}): 无法归一化身份`);
 			continue;

@@ -23,10 +23,16 @@ import {
  * 进程内再合并成一次；租约过期后万一有两个在拉，`fetched_at` 条件写保证旧的盖不掉新的。
  */
 
-export interface SyncDeps {
-	db: Database;
+/** 拉谁的通讯录、怎么归一化身份 */
+export interface OrgSource {
 	/** 自有应用的凭证，唯一拿来拉通讯录的那对 */
 	dingtalk: DingtalkCredentials;
+	/** 见 `~/domain/org-identity` 的 `normalizeIdentity` */
+	emailFallbackDomains: readonly string[];
+}
+
+export interface SyncDeps extends OrgSource {
+	db: Database;
 	/** 传请求的 logger：带 reqId，才对得上审计的 `request_id` */
 	log: Log;
 }
@@ -146,7 +152,12 @@ async function doSync(deps: SyncDeps): Promise<SyncResult> {
 		// 抢到租约之后才申请 token：冷却期内与别处在拉时都不申请。在 try 里：token 申请失败
 		// （secret 错、钉钉故障）也要进 `error`，状态端点才报得出来
 		const fetched = await withAccessToken(deps.db, deps.dingtalk, fetchOrg);
-		result = await writeOrgSync(deps.db, lease, fetched);
+		result = await writeOrgSync(
+			deps.db,
+			lease,
+			fetched,
+			deps.emailFallbackDomains,
+		);
 	} catch (err) {
 		await recordSyncFailure(deps.db, lease, describeFailure(err));
 		throw err;

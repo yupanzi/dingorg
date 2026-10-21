@@ -7,7 +7,7 @@ import { syncTriggerAudit } from "~/domain/sync";
 import { AUDIT_ACTIONS } from "~/resources";
 import type { Deps } from "../deps";
 import { getContactUser, getUserAccessToken } from "../dingtalk/client";
-import { type IdpEnv, ownDingtalkApp } from "../env";
+import { type IdpEnv, ownOrgSource } from "../env";
 import { oidcIssuer } from "../oidc/mount";
 import { buildDingtalkAuthUrl } from "./dingtalk";
 import {
@@ -38,7 +38,8 @@ export function registerInteractionRoutes(
 	env: IdpEnv,
 	provider: Provider,
 ): void {
-	const dingtalk = ownDingtalkApp(env);
+	const orgSource = ownOrgSource(env);
+	const { dingtalk } = orgSource;
 	// 审计记 client 的 name：UUID 人看不出是哪个下游
 	const clientNames = new Map(
 		pickAuthEntries(env.AUTH_JSON, "oidc").map((c) => [c.id, c.name]),
@@ -164,7 +165,7 @@ export function registerInteractionRoutes(
 
 			// 与 `findAccount` 同一个 `admit`。新人在这里补同步，不自动建用户
 			const verdict = await admit(
-				{ db: deps.db, dingtalk, log: req.log },
+				{ db: deps.db, ...orgSource, log: req.log },
 				unionId,
 				"realtime_sync",
 			);

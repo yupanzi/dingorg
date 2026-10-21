@@ -15,11 +15,16 @@ const API_KEY_ENTRY = {
 	key: `dok_1a2b3c4d_${"Q".repeat(43)}`,
 };
 
+/** orgsync 的全部必填项，也是常驻服务的子集 */
+const SYNC_ENV = {
+	DATABASE_URL: "postgresql://u:p@localhost:5432/db",
+	DINGTALK_APP_KEY: "dingabcdefg123456",
+	DINGTALK_APP_SECRET: DINGTALK_SECRET,
+};
+
 function env(clientSecret: string, extra: object[] = [API_KEY_ENTRY]) {
 	return {
-		DATABASE_URL: "postgresql://u:p@localhost:5432/db",
-		DINGTALK_APP_KEY: "dingabcdefg123456",
-		DINGTALK_APP_SECRET: DINGTALK_SECRET,
+		...SYNC_ENV,
 		PUBLIC_ORIGIN: "http://localhost:3080",
 		AUTH_JSON: JSON.stringify([
 			{
@@ -126,20 +131,50 @@ describe("withDevDefaults", () => {
 
 describe("orgSyncEnvSchema", () => {
 	it("要库与钉钉凭证，不要 OIDC 与 API key 配置", () => {
-		const parsed = parseEnv(orgSyncEnvSchema, {
-			DATABASE_URL: "postgresql://u:p@localhost:5432/db",
-			DINGTALK_APP_KEY: "dingabcdefg123456",
-			DINGTALK_APP_SECRET: DINGTALK_SECRET,
-		});
+		const parsed = parseEnv(orgSyncEnvSchema, SYNC_ENV);
 		expect(parsed.DINGTALK_APP_KEY).toBe("dingabcdefg123456");
 	});
 
 	it("缺钉钉凭证就报出来", () => {
 		expect(() =>
-			parseEnv(orgSyncEnvSchema, {
-				DATABASE_URL: "postgresql://u:p@localhost:5432/db",
-			}),
+			parseEnv(orgSyncEnvSchema, { DATABASE_URL: SYNC_ENV.DATABASE_URL }),
 		).toThrow(/DINGTALK_APP_KEY[\s\S]*DINGTALK_APP_SECRET/);
+	});
+});
+
+describe("EMAIL_FALLBACK_DOMAINS", () => {
+	const domains = (schema: typeof orgSyncEnvSchema, source: object) =>
+		parseEnv(schema, source).EMAIL_FALLBACK_DOMAINS;
+
+	it("不设或留空 = 不兜底", () => {
+		expect(domains(orgSyncEnvSchema, SYNC_ENV)).toEqual([]);
+		expect(
+			domains(orgSyncEnvSchema, { ...SYNC_ENV, EMAIL_FALLBACK_DOMAINS: "" }),
+		).toEqual([]);
+	});
+
+	it("逗号分隔、去空白；常驻服务与 orgsync 都读得到", () => {
+		const raw = " Corp.com , b.example.com,";
+		expect(
+			domains(orgSyncEnvSchema, { ...SYNC_ENV, EMAIL_FALLBACK_DOMAINS: raw }),
+		).toEqual(["Corp.com", "b.example.com"]);
+		expect(
+			parseEnv(idpEnvSchema, {
+				...env("c".repeat(43)),
+				EMAIL_FALLBACK_DOMAINS: raw,
+			}).EMAIL_FALLBACK_DOMAINS,
+		).toEqual(["Corp.com", "b.example.com"]);
+	});
+
+	it("写成邮箱或带 @ 的是启动失败，而不是静默不兜底", () => {
+		for (const bad of ["@corp.com", "a@corp.com", "corp"]) {
+			expect(() =>
+				parseEnv(orgSyncEnvSchema, {
+					...SYNC_ENV,
+					EMAIL_FALLBACK_DOMAINS: bad,
+				}),
+			).toThrow(/EMAIL_FALLBACK_DOMAINS/);
+		}
 	});
 });
 

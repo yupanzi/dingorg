@@ -12,7 +12,7 @@ import {
 	compileRedirectUriRegexes,
 	matchesRedirectUriRegex,
 } from "../domain/oidc-client";
-import { type IdpEnv, ownDingtalkApp, trustsProxyHeaders } from "../env";
+import { type IdpEnv, ownOrgSource, trustsProxyHeaders } from "../env";
 import { logFor } from "../log";
 import { makeFindAccount } from "./account";
 import { createAdapterFactory } from "./adapter";
@@ -57,7 +57,7 @@ export async function createOidcProvider(
 		adapter: createAdapterFactory(deps.db),
 		findAccount: makeFindAccount({
 			db: deps.db,
-			dingtalk: ownDingtalkApp(env),
+			...ownOrgSource(env),
 		}),
 		// jose 的 JWK 与 oidc-provider 的声明结构等价
 		jwks: { keys: keys.jwks as unknown as Record<string, unknown>[] },

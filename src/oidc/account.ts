@@ -27,7 +27,7 @@ export function makeFindAccount(deps: Omit<AdmissionDeps, "log">): FindAccount {
 				sub,
 				name: u.displayName,
 				preferred_username: u.userName,
-				// 没有企业邮箱的人两个都不发：发 null 可能被下游当成「有这个键」
+				// 没有 email 的人两个都不发：发 null 可能被下游当成「有这个键」
 				...(u.email ? { email: u.email, email_verified: true } : {}),
 				...(u.avatar ? { picture: u.avatar } : {}),
 			}),

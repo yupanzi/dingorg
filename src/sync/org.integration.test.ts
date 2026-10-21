@@ -73,6 +73,7 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 	const deps: SyncDeps = {
 		db,
 		dingtalk: { clientId: APP, clientSecret: "x" },
+		emailFallbackDomains: [],
 		log: logger,
 	};
 

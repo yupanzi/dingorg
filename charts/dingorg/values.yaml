@@ -35,6 +35,10 @@ env:
 
   # fatal / error / warn / info / debug / trace / silent，留空即 info
   LOG_LEVEL: ''
+
+  # 企业邮箱缺失时钉钉「邮箱」兜底只认这些域名，逗号分隔；留空 = 只认企业邮箱。
+  # ⚠️ 只在这里写，别在 server / cronjobs 的 env 里单独覆盖：各 Pod 必须同值（理由见 src/env.ts）
+  EMAIL_FALLBACK_DOMAINS: ''
 podAnnotations: {}
 podLabels: {}
 podSecurityContext: {}

@@ -58,6 +58,7 @@ maybe("findAccount 准入 (需要 DATABASE_URL)", () => {
 	const findAccount = makeFindAccount({
 		db,
 		dingtalk: { clientId: OWN_APP, clientSecret: "x" },
+		emailFallbackDomains: [],
 	});
 
 	// biome-ignore lint/suspicious/noExplicitAny: oidc-provider 的 KoaContextWithOIDC 造不出来，本实现只从它取 logger

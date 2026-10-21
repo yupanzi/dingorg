@@ -206,14 +206,15 @@ export async function listSubDepts(
 
 /**
  * `topapi/v2/user/list` 的成员。⚠️ 别退回 listsimple：它没有 unionid / org_email。
- * unionid 与 org_email 在「个人信息」权限点之下，未开通时静默缺失。钉钉的 `email`
- * （管理员手填、未验证）刻意不声明。
+ * unionid 与 org_email 在「个人信息」权限点之下，未开通时静默缺失。
  */
 export interface DeptUser {
 	userid: string;
 	name: string;
 	unionid?: string;
 	org_email?: string;
+	/** 名片上的「邮箱」，没填时是空串。只作 org_email 的兜底，规则在 `~/domain/org-identity` */
+	email?: string;
 	avatar?: string;
 	/** 一人多职用「；」「;」分隔。缺失有两种形态：键不存在与空串 */
 	title?: string;

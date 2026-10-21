@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 
 import type { Deps } from "~/deps";
 import { pickAuthEntries } from "~/domain/config-json";
-import { type IdpEnv, ownDingtalkApp } from "~/env";
+import { type IdpEnv, ownOrgSource } from "~/env";
 
 import { registerGuard } from "./guard";
 import { registerOrgRoutes } from "./org";
@@ -13,14 +13,14 @@ export async function registerApi(
 	deps: Deps,
 	env: IdpEnv,
 ): Promise<void> {
-	const dingtalk = ownDingtalkApp(env);
+	const orgSource = ownOrgSource(env);
 
 	// ⚠️ 必须包在 register 作用域里：否则 guard 跑遍 /healthz 与 /oidc/*
 	await app.register(async (scope) => {
 		registerGuard(scope, deps, pickAuthEntries(env.AUTH_JSON, "apikey"));
 
-		registerOrgRoutes(scope, deps, dingtalk);
-		registerSyncRoutes(scope, deps, dingtalk);
+		registerOrgRoutes(scope, deps, orgSource);
+		registerSyncRoutes(scope, deps, orgSource);
 
 		// 自描述端点，不鉴权（只描述形状、不吐数据）。⚠️ 加端点要来这里补一行，漏了没有检查会红
 		scope.get("/api/v1", async () => ({

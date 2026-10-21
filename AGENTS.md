@@ -67,8 +67,10 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **登录不自动建用户**：新人（钉钉确认是员工、同步结果里没有）在回调里补一轮同步再查，还没有就回
   我们自己的 403 页。
 - **unionId 缺失 = 登录不了**：钉钉「个人信息」权限点没开时它静默缺失。
-- ⚠️ **email 只取 `org_email`**（它以 `email_verified: true` 发出去）：别加回钉钉的 `email`
-  字段，也别按姓名拼域名。没有企业邮箱的人 `email` 与 `email_verified` 都不出现。
+- ⚠️ **email 先取 `org_email`，缺失或不合法时才用钉钉的 `email`（「邮箱」），且域名必须在
+  `EMAIL_FALLBACK_DOMAINS` 里**（不设 = 不兜底）：两者都以 `email_verified: true` 发出去，别把
+  白名单放宽成任意域名，也别按姓名拼域名（理由在 `domain/org-identity.ts`）。两者都没有的人 `email` 与
+  `email_verified` 都不出现。⚠️ 会同步的各 Pod 必须同值，别在组件 env 里单独覆盖（理由在 `env.ts`）。
 - **email 与 userName 的归一化只在 `domain/org-identity.ts`**；撞名规则是
   `domain/org-sync.ts` 的 `pickOwner`（原持有者 = 上一轮的当前成员，已离开的不算）。
 - **拉取用 `topapi/v2/user/list`，别退回 listsimple**（没有 unionid / org_email）。
@@ -139,7 +141,7 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **guard 必须包在 `app.register` 作用域里**，否则跑遍 `/healthz` 与 `/oidc/*`。
 - ⚠️ **别用 `decorateRequest` 预置 `auditPatch`**：共享同一个对象引用，并发时审计串号。
 - **组织数据不分页**。改分页时第二排序键必须唯一（userName）。
-- ⚠️ **判定别用 `email` / `dingtalk.orgEmail`**：覆盖率约五成、可为 null。身份走 `userName`，
+- ⚠️ **判定别用 `email` / `dingtalk.orgEmail`**：可为 null，且随管理员改钉钉资料而变。身份走 `userName`，
   永不变的是 `unionid`。
 - ⚠️ **`extension` 原样透传，字段集合由钉钉后台管理员定义**：要收口就在
   `domain/org-sync.ts` 的 `toUser` 加允许键白名单。
@@ -307,15 +309,16 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
   · API key `auth/api-key.test.ts`、`domain/api-key.test.ts` · OIDC 契约与 REST 面
   `app.integration.test.ts` · 凭证配置 `domain/config-json.test.ts`、`domain/oidc-client.test.ts`、
   `env.test.ts`、`oidc/new-client.test.ts` · 脱敏 `log.test.ts` · sslmode 语义 `db/index.test.ts`
-  · 职级 `domain/org-title.test.ts` · 实时校验 `dingtalk/employment.test.ts`。
+  · 职级 `domain/org-title.test.ts` · 实时校验 `dingtalk/employment.test.ts`
+  · email 兜底 `domain/org-identity.test.ts`（「邮箱」兜底一组）。
 - **准入必跑 `admission/index.integration.test.ts`（组合规则）与 `oidc/account.integration.test.ts`**：
   后者「状态行属于别的应用时一律拒绝」「已离开的人拒绝」「复用会话时钉钉实时说不是员工 → 拒」不能删；
   `app.integration.test.ts` 的「扫码登录与准入」走完整链路（含复用会话不是 500）。
 - **手测**：
   - REST：无凭证 / 错 key / OIDC client 凭证 / 钉钉 AppKey:AppSecret 都 401 且不说原因；
     审计里 grep 不到 key，`actor_type` 是 `api_key`。
-  - OIDC 全链路（真实钉钉凭证）：authorize → 扫码 → token → userinfo；没有企业邮箱的人没有
-    `email` / `email_verified`；非本企业员工（含外部联系人）看到 403 页，审计原因是「不是本企业内部员工」。
+  - OIDC 全链路（真实钉钉凭证）：authorize → 扫码 → token → userinfo；企业邮箱与兜底的「邮箱」都没有
+    的人没有 `email` / `email_verified`；非本企业员工（含外部联系人）看到 403 页，审计原因是「不是本企业内部员工」。
   - 实时校验：钉钉里移除一个人、**不同步**，用他已有的浏览器会话再登录下游 → 被要求重新扫码 → 403；
     新加一个人、不同步 → 扫码直接登录，审计多一条 `sync.trigger`（actor 是他）；关掉「成员信息」权限点
     → 已同步的人登录照常（只看同步结果）、新加的人不补同步而是 403，日志每次校验一条 warn。

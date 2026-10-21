@@ -134,8 +134,8 @@ id_token 与 userinfo 都给出这些，**集合是固定的**：
 | --- | --- |
 | `sub` | 钉钉 unionId（跨应用永久标识，**下游应当以它记用户**）|
 | `name` | 钉钉显示名 |
-| `preferred_username` | 即 `userName`：企业邮箱的 local part，没有时取显示名括号前的部分 |
-| `email` / `email_verified` | 企业邮箱（小写），`email_verified` 恒为 true。**没有企业邮箱的人两个都不出现** |
+| `preferred_username` | 即 `userName`：`email` 的 local part，没有时取显示名括号前的部分 |
+| `email` / `email_verified` | 企业邮箱（小写）；企业邮箱缺失或不合法、且配了 `EMAIL_FALLBACK_DOMAINS` 时，取钉钉名片上属于这些域名的「邮箱」。`email_verified` 恒为 true。**两者都没有的人两个都不出现** |
 | `picture` | 钉钉头像，没有时不出现 |
 
 没有 `roles`、部门与职级 —— 要按职级授权就从 `/api/v1/org/users` 拿，或交给下游判定。
@@ -206,9 +206,9 @@ curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/org/users | 
 
 ```jsonc
 {
-  "userName": "alice",              // 企业邮箱 local part，没有则取显示名；当前成员内唯一
+  "userName": "alice",              // email 的 local part，没有则取显示名；当前成员内唯一
   "displayName": "Alice(爱丽丝)",
-  "email": "alice@example.com",     // 只取企业邮箱，没有就是 null
+  "email": "alice@example.com",     // 企业邮箱，或兜底域名下的「邮箱」（见 claim 契约），没有就是 null
   "depts": [{ "id": 12, "name": "技术中心", "isLeader": true }],
   "titles": ["技术中心总监", "技术中心-架构组组长"],  // 一人多职，已拆分
   "ranks": ["总监", "组长"],                          // 按内置职级词表从 titles 提取
@@ -224,8 +224,8 @@ curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/org/users | 
 }
 ```
 
-- **关联键**：`userName` 可读，但会随企业邮箱或显示名变化；永不变的是 `dingtalk.unionid`。
-  两人得出同一个 `userName`（同名且都没有企业邮箱）时只保留原持有者，另一人不在列表里、也登录不了。
+- **关联键**：`userName` 可读，但会随 `email` 或显示名变化；永不变的是 `dingtalk.unionid`。
+  两人得出同一个 `userName`（同名且都没有 `email`）时只保留原持有者，另一人不在列表里、也登录不了。
 - `ranks` 的职级词表与 `jobLevel` 的「职务」字段按本组织定，别的企业多半拿到 `[]` 与 `null`。
 - ⚠️ **`dingtalk.extension` 原样透传**：钉钉后台新加的自定义字段（可能是手机号）下次同步后就会出现在响应里。
 

@@ -1,11 +1,10 @@
 import type { FastifyInstance } from "fastify";
 
 import type { Deps } from "~/deps";
-import type { DingtalkCredentials } from "~/dingtalk/client";
 import type { OrgApiSyncResponse, OrgApiSyncStatus } from "~/domain/org-api";
 import { SYNC_TRIGGER_SUMMARY } from "~/domain/sync";
 import { AUDIT_ACTIONS } from "~/resources";
-import { syncOrg } from "~/sync/org";
+import { type OrgSource, syncOrg } from "~/sync/org";
 import { readSyncState, type SyncState } from "~/sync/store";
 
 import { requireCaller } from "./guard";
@@ -14,14 +13,16 @@ import { requireCaller } from "./guard";
 export function registerSyncRoutes(
 	app: FastifyInstance,
 	deps: Deps,
-	dingtalk: DingtalkCredentials,
+	orgSource: OrgSource,
 ): void {
 	app.get(
 		"/api/v1/sync",
 		{ config: { auditAction: AUDIT_ACTIONS.syncStatus } },
 		async (req) => {
 			requireCaller(req);
-			return toStatus(await readSyncState(deps.db, dingtalk.clientId));
+			return toStatus(
+				await readSyncState(deps.db, orgSource.dingtalk.clientId),
+			);
 		},
 	);
 
@@ -30,14 +31,14 @@ export function registerSyncRoutes(
 		{ config: { auditAction: AUDIT_ACTIONS.syncTrigger } },
 		async (req) => {
 			requireCaller(req);
-			req.auditPatch.targetId = dingtalk.clientId;
+			req.auditPatch.targetId = orgSource.dingtalk.clientId;
 			// 先写失败的说法：同步抛出后由 guard 的 error handler 应答，走不回这里
 			req.auditPatch.details = { summary: SYNC_TRIGGER_SUMMARY.failed };
 
 			// 同步拉完再返回：没有后台执行体，调用方拿到响应就是结果。别处正在拉时不等它
 			const { outcome, state } = await syncOrg({
 				db: deps.db,
-				dingtalk,
+				...orgSource,
 				log: req.log,
 			});
 			req.auditPatch.details = { summary: SYNC_TRIGGER_SUMMARY[outcome] };
