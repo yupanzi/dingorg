@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/yupanzi/dingorg/compare/v1.5.0...v1.6.0) (2026-10-21)
+
+### Features
+
+* **sync:** 企业邮箱缺失时按域名白名单用钉钉「邮箱」兜底 ([18a44e9](https://github.com/yupanzi/dingorg/commit/18a44e9a8e486125f905c4ab7c43919701273396))
+
 ## [1.5.0](https://github.com/yupanzi/dingorg/compare/v1.4.1...v1.5.0) (2026-10-21)
 
 ### Features
