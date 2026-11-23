@@ -5,7 +5,8 @@
 1. **钉钉认证 → 标准 OIDC**：下游用任意标准 OIDC 客户端库接入，底层由钉钉扫码完成认证。
 2. **钉钉组织架构 → 同步镜像 → REST 出口**：调用方出示本服务配发的 **API key**，读到自有钉钉应用
    可见范围内的成员与部门（含 unionId、企业邮箱、职级、部门主管）。钉钉凭证只在本服务手里，调用方
-   碰不到；同步来的组织数据存在 Postgres 的镜像表里。
+   碰不到；同步来的组织数据存在 Postgres 的镜像表里。同一份数据另有**按 LDAP 标准 schema** 给出的
+   目录（JSON 与 LDIF 两种编码），见「LDAP 目录」。
 
 外部依赖只有 Postgres。没有管理界面；凭证只有两种静态配置：登录用的 OIDC client 与 REST 用的
 API key，同放在 `AUTH_JSON` 一个数组里、按 `type` 区分，两者互不相干。
@@ -17,7 +18,7 @@ API key，同放在 `AUTH_JSON` 一个数组里、按 `type` 区分，两者互�
                   ┌──────────── dingorg（单进程）─────────────┐
   钉钉扫码 ──────► │  /oidc/*        OIDC Provider            │ ──► 下游应用
                   │  /oidc/interaction  钉钉登录交互          │     (authentik…)
-                  │  /api/v1/*      组织数据（自有应用）      │ ◄── 内部系统
+                  │  /api/v1/* /api/v2/*  组织数据（自有应用）│ ◄── 内部系统
                   └──────────────────┬───────────────────────┘     （出示
                                      │                              API key）
                                   Postgres
@@ -228,6 +229,76 @@ curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v1/org/users | 
   两人得出同一个 `userName`（同名且都没有 `email`）时只保留原持有者，另一人不在列表里、也登录不了。
 - `ranks` 的职级词表与 `jobLevel` 的「职务」字段按本组织定，别的企业多半拿到 `[]` 与 `null`。
 - ⚠️ **`dingtalk.extension` 原样透传**：钉钉后台新加的自定义字段（可能是手机号）下次同步后就会出现在响应里。
+
+### LDAP 目录（`/api/v2`）
+
+同一份组织数据，按 LDAP 标准 schema 组织成目录条目：人是 `inetOrgPerson`，部门是 `groupOfNames`。
+鉴权、懒加载、错误码、审计都与上面相同，只是形状换成各系统通用的 LDAP 词汇。
+
+| 端点 | 响应 |
+| --- | --- |
+| `GET /api/v2/directory` | `{ baseDn, entries, total, fetchedAt }`，`entries` 是 `{ dn, attributes }`，`total` 含两个容器条目 |
+| `GET /api/v2/directory.ldif` | 同一份条目的 LDIF（RFC 2849，`text/plain`），开头的注释里有 `baseDn` 与 `fetchedAt` |
+
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v2/directory | jq
+# 导入 OpenLDAP：先加载自定义 schema，再按顺序导入条目
+ldapadd -Y EXTERNAL -H ldapi:/// -f ldap/dingorg.ldif
+curl -s -H "Authorization: Bearer $API_KEY" https://<域名>/api/v2/directory.ldif \
+  | ldapadd -x -D <管理员 DN> -W -H ldap://<LDAP 服务器>
+```
+
+```jsonc
+{
+  "dn": "dingtalkUnionId=abc...,ou=people,dc=example,dc=com",
+  "attributes": {
+    "objectClass": ["top", "person", "organizationalPerson", "inetOrgPerson", "dingtalkPerson"],
+    "uid": ["alice"],                     // 即 userName
+    "cn": ["Alice(爱丽丝)"],
+    "sn": ["Alice(爱丽丝)"],              // 钉钉没有单独的姓，与 cn 同值（sn 是必填属性）
+    "displayName": "Alice(爱丽丝)",       // 单值属性写成字符串，其余都是数组
+    "mail": ["alice@example.com"],
+    "title": ["技术中心总监", "技术中心-架构组组长"],  // 一人多职，一条一个
+    "departmentNumber": ["8", "12"],      // 直属部门的 id
+    "ou": ["技术中心", "架构组"],          // 直属部门的名字
+    "o": ["某某科技"],                    // 企业名（根部门名）
+    "labeledURI": ["https://...avatar"],
+    "memberOf": ["dingtalkDeptId=8,ou=groups,...", "dingtalkDeptId=12,ou=groups,..."],
+    "dingtalkUnionId": "abc...",
+    "dingtalkUserId": "0123456789",
+    "dingtalkRank": ["总监", "组长"]
+  }
+}
+// 部门
+{
+  "dn": "dingtalkDeptId=12,ou=groups,dc=example,dc=com",
+  "attributes": {
+    "objectClass": ["top", "groupOfNames", "dingtalkGroup"],
+    "cn": ["架构组"],
+    "member": ["dingtalkUnionId=abc...,ou=people,..."],   // 直属成员 + 子部门
+    "owner": ["dingtalkUnionId=abc...,ou=people,..."],    // 这个部门的主管，可多个，可没有
+    "dingtalkDeptId": "12"
+  }
+}
+```
+
+- **严格符合标准 schema**：每个条目都能原样导入标准 LDAP 服务器。钉钉特有的属性在辅助类
+  `dingtalkPerson` / `dingtalkGroup` 里，schema 是仓库的 `ldap/dingorg.ldif`（OpenLDAP cn=config
+  格式，OID 在 `2.25.<UUID>` 分支下，无需注册）。
+- **DN 只含永不变的 id**：人是 unionid，部门是钉钉部门 id；改邮箱、部门改名、调整架构都不改 DN。
+  DN 后缀是 env `LDAP_BASE_DN`（默认 `dc=dingorg`），⚠️ 上线后再改，所有 DN 一起变。
+- **身兼多职**：职务、部门、`memberOf` 都是多值；各部门的主管在那个部门的 `owner` 上（主管只对那个
+  部门成立）。**层级**只靠 `member` 嵌套：父部门的 `member` 里有子部门。`memberOf` 只列直属部门，
+  要「某部门及其下属的所有人」就顺着 `member` 递归。
+- ⚠️ **多值属性是无序集合**：`departmentNumber` 与 `ou` 不能按下标配对，要知道哪个 id 对应哪个名字，
+  顺着 `memberOf` 找到那个部门条目。
+- **条目顺序**：容器（`ou=people`、`ou=groups`）→ 人（按 `uid`）→ 部门（子部门在父部门之前），按顺序
+  导入不会引用到还没建的条目。base DN 本身不在里面（它属于导入方的目录）。
+- **与 v1 的差别**：没有 unionid 的人不出现；既没有人、也没有子部门的部门不出现（`groupOfNames` 至少
+  要一个 `member`），只含这种子部门的部门同样不出现；不输出 `extension` 与 `jobLevel`，`manager` 不填；
+  非 ASCII 的邮箱进不了 `mail`（IA5 String），不出现。
+- `memberOf` 是运营属性：JSON 里有（搜索也会返回它），LDIF 里没有，导入后由服务器按 `member` 算
+  （OpenLDAP 要开 memberof overlay）。
 
 ## 审计
 

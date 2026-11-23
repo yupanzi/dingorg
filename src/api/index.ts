@@ -19,7 +19,7 @@ export async function registerApi(
 	await app.register(async (scope) => {
 		registerGuard(scope, deps, pickAuthEntries(env.AUTH_JSON, "apikey"));
 
-		registerOrgRoutes(scope, deps, orgSource);
+		registerOrgRoutes(scope, deps, orgSource, env.LDAP_BASE_DN);
 		registerSyncRoutes(scope, deps, orgSource);
 
 		// 自描述端点，不鉴权（只描述形状、不吐数据）。⚠️ 加端点要来这里补一行，漏了没有检查会红
@@ -40,6 +40,16 @@ export async function registerApi(
 					note: "只列当前成员；数据不按时间过期，首次调用会当场同步；响应的 fetchedAt 是数据时刻",
 				},
 				{ method: "GET", path: "/api/v1/org/departments" },
+				{
+					method: "GET",
+					path: "/api/v2/directory",
+					note: "同一份组织数据按 LDAP 标准 schema（inetOrgPerson / groupOfNames）给出的目录条目，自定义属性的 schema 见仓库的 ldap/dingorg.ldif；数据规则与 /api/v1/org/* 相同",
+				},
+				{
+					method: "GET",
+					path: "/api/v2/directory.ldif",
+					note: "同一份目录的 LDIF（RFC 2849），按顺序 ldapadd 即可；不含运营属性 memberOf",
+				},
 				{ method: "GET", path: "/api/v1/sync", note: "同步的状态" },
 				{
 					method: "POST",

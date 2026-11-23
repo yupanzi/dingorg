@@ -8,6 +8,7 @@ import {
 	claimSync,
 	findMember,
 	readOrgDepartments,
+	readOrgDirectory,
 	readOrgUsers,
 	readSyncState,
 	recordSyncFailure,
@@ -38,7 +39,7 @@ maybe("组织同步的存储 (需要 DATABASE_URL)", () => {
 	const db = createDb(url ?? "", { maxConnections: 4 });
 
 	const currentIds = async () =>
-		(await readOrgUsers(db, APP))?.items.map((u) => u.dingtalk.userid);
+		(await readOrgUsers(db, APP))?.data.map((u) => u.dingtalk.userid);
 	const row = async (userid: string) =>
 		(await db.select().from(orgUsers).where(eq(orgUsers.userid, userid)))[0];
 
@@ -230,10 +231,12 @@ maybe("组织同步的存储 (需要 DATABASE_URL)", () => {
 		await seedOrgSync(db, APP, fetched);
 		const { data } = buildOrgSync(fetched, undefined, []);
 
-		expect((await readOrgUsers(db, APP))?.items).toEqual(data.users);
-		expect((await readOrgDepartments(db, APP))?.items).toEqual(
-			data.departments,
-		);
+		expect((await readOrgUsers(db, APP))?.data).toEqual(data.users);
+		expect((await readOrgDepartments(db, APP))?.data).toEqual(data.departments);
+		expect((await readOrgDirectory(db, APP))?.data).toEqual({
+			users: data.users,
+			departments: data.departments,
+		});
 	});
 
 	it("状态行属于别的应用：自有视角是 never、计数为空，名单与准入都查不到", async () => {

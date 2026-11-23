@@ -100,7 +100,7 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 	it("没有数据时当场同步一次；之后再旧也不外呼", async () => {
 		const first = await getOrSyncOrg(deps, readOrgUsers);
 		expect(fetchCount).toBe(1);
-		expect(first.items).toHaveLength(1);
+		expect(first.data).toHaveLength(1);
 
 		await ageOrgSync(db, 365 * 24 * 3600_000, { fetched: true });
 		await getOrSyncOrg(deps, readOrgUsers);
@@ -147,7 +147,7 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 		await expect(syncOrg(deps)).rejects.toThrow("钉钉挂了");
 
 		const after = await readOrgUsers(db, APP);
-		expect(after?.items).toEqual(before?.items);
+		expect(after?.data).toEqual(before?.data);
 		expect(after?.fetchedAt.getTime()).toBe(before?.fetchedAt.getTime());
 		expect(await leftCount()).toBe(0);
 		expect((await state()).error).toBe("钉钉挂了（60020）");
@@ -206,7 +206,7 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 		const after = await state();
 		expect(await leftCount()).toBe(0);
 		expect(
-			(await readOrgUsers(db, APP))?.items.map((u) => u.dingtalk.userid),
+			(await readOrgUsers(db, APP))?.data.map((u) => u.dingtalk.userid),
 		).toEqual(["u1"]);
 		expect(after.fetchedAt?.getTime()).toBe(before.fetchedAt?.getTime());
 		expect(after.error).toBe("内部错误");
@@ -325,7 +325,7 @@ maybe("组织同步 (需要 DATABASE_URL)", () => {
 			expect(after?.appKey).toBe(OTHER_APP);
 			expect(after?.fetchedAt?.getTime()).toBe(before?.fetchedAt?.getTime());
 			expect(after?.error).toBe("钉钉挂了（60020）");
-			expect((await readOrgUsers(db, OTHER_APP))?.items).toHaveLength(1);
+			expect((await readOrgUsers(db, OTHER_APP))?.data).toHaveLength(1);
 
 			const s = await state();
 			expect(s.fetchedAt).toBeNull();

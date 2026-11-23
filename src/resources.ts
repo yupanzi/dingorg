@@ -30,6 +30,9 @@ export const AUDIT_ACTIONS = {
 
 	orgListUsers: "org.listUsers",
 	orgListDepartments: "org.listDepartments",
+	/** 同一份目录的两种编码，分开记 */
+	orgReadDirectory: "org.readDirectory",
+	orgReadDirectoryLdif: "org.readDirectoryLdif",
 
 	/** 「看一眼」与「拉一次」分开记 */
 	syncStatus: "sync.status",

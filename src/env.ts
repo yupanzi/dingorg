@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { authJsonSchema } from "~/domain/config-json";
+import { BASE_DN_PATTERN, DEFAULT_BASE_DN } from "~/domain/ldap-directory";
 import { LOG_LEVELS } from "~/log";
 import type { OrgSource } from "~/sync/org";
 
@@ -110,6 +111,18 @@ export const idpEnvSchema = z
 						"只填 origin，如 https://sso.example.com：不带路径与结尾 /、域名小写、不写默认端口",
 				});
 		}),
+
+		/**
+		 * `/api/v2/directory` 里所有 DN 的后缀。⚠️ 上线后再改 = 所有 DN 一起变，存过 DN 的消费方
+		 * 要整体重新对一遍
+		 */
+		LDAP_BASE_DN: z
+			.string()
+			.regex(
+				BASE_DN_PATTERN,
+				"只写不需要转义的简单形式，如 dc=example,dc=com（逗号两侧不留空格）",
+			)
+			.default(DEFAULT_BASE_DN),
 
 		/**
 		 * 下游 OIDC client 与 REST API key 的 JSON 数组（都含明文凭证），规则见

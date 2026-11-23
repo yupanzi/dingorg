@@ -178,6 +178,34 @@ describe("EMAIL_FALLBACK_DOMAINS", () => {
 	});
 });
 
+describe("LDAP_BASE_DN", () => {
+	const baseDn = (value?: string) =>
+		parseEnv(idpEnvSchema, { ...env("c".repeat(43)), LDAP_BASE_DN: value })
+			.LDAP_BASE_DN;
+
+	it("不设或留空取 dc=dingorg", () => {
+		expect(baseDn()).toBe("dc=dingorg");
+		expect(baseDn("")).toBe("dc=dingorg");
+	});
+
+	it("收不需要转义的简单形式", () => {
+		expect(baseDn("dc=example,dc=com")).toBe("dc=example,dc=com");
+		expect(baseDn("o=my-corp.cn")).toBe("o=my-corp.cn");
+	});
+
+	it("要转义的、逗号两侧带空格的、不是 DN 的都是启动失败：拼出的 DN 不能有歧义", () => {
+		for (const bad of [
+			"dc=example, dc=com",
+			"dc=a+b",
+			"o=某某科技",
+			"example.com",
+			"dc=example,",
+		]) {
+			expect(() => baseDn(bad), bad).toThrow(/LDAP_BASE_DN/);
+		}
+	});
+});
+
 // 两处（fastify trustProxy、oidc-provider proxy）都读它：判据只有 PUBLIC_ORIGIN 的协议
 describe("trustsProxyHeaders", () => {
 	it("https origin：前面必有终结 TLS 的代理 → 信任", () => {

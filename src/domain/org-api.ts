@@ -1,6 +1,6 @@
 /**
  * 对外组织 API 的响应契约，由 `~/sync/store` 从镜像表组装。
- * 字段名借 SCIM 的词汇（OIDC 标准 claim 里没有雇佣关系属性）。
+ * v1 的字段名借 SCIM 的词汇（OIDC 标准 claim 里没有雇佣关系属性）；v2 按 LDAP 标准 schema。
  */
 
 /** `ancestorIds` 是从根到父的完整链 */
@@ -65,6 +65,19 @@ export interface OrgApiUsersResponse extends SyncStamp {
 
 export interface OrgApiDeptsResponse extends SyncStamp {
 	departments: OrgApiDept[];
+	total: number;
+}
+
+/** 单值属性是字符串，多值属性是字符串数组；没有值的属性不出现。组装规则在 `~/domain/ldap-directory` */
+export interface OrgApiDirectoryEntry {
+	dn: string;
+	attributes: Record<string, string | string[]>;
+}
+
+/** `GET /api/v2/directory`。`total` 含 `ou=people` / `ou=groups` 两个容器条目 */
+export interface OrgApiDirectoryResponse extends SyncStamp {
+	baseDn: string;
+	entries: OrgApiDirectoryEntry[];
 	total: number;
 }
 

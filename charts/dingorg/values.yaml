@@ -39,6 +39,10 @@ env:
   # 企业邮箱缺失时钉钉「邮箱」兜底只认这些域名，逗号分隔；留空 = 只认企业邮箱。
   # ⚠️ 只在这里写，别在 server / cronjobs 的 env 里单独覆盖：各 Pod 必须同值（理由见 src/env.ts）
   EMAIL_FALLBACK_DOMAINS: ''
+
+  # /api/v2/directory 里所有 DN 的后缀（如 dc=example,dc=com），留空即 dc=dingorg。
+  # ⚠️ 上线后再改，所有 DN 一起变，存过 DN 的消费方要整体重新对一遍
+  LDAP_BASE_DN: ''
 podAnnotations: {}
 podLabels: {}
 podSecurityContext: {}

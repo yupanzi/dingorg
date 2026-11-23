@@ -281,7 +281,7 @@ function fromRow(r: UserRow, depts: OrgApiUserDept[]): OrgApiUser {
 /** 读到的自有数据与它的数据时刻 */
 export interface OrgRead<T> {
 	fetchedAt: Date;
-	items: T[];
+	data: T;
 }
 
 /** 读路径的签名，`getOrSyncOrg` 收它 */
@@ -294,7 +294,7 @@ export type OrgReader<T> = (
  * 读路径的共同外壳：自有应用同步成功过才跑 `query`，否则 null。状态行与镜像表分几条语句读，
  * 要落在同一个快照里：中途有一轮提交也不会读出半新半旧
  */
-function readOwn<T>(query: (tx: Tx) => Promise<T[]>): OrgReader<T> {
+function readOwn<T>(query: (tx: Tx) => Promise<T>): OrgReader<T> {
 	return (db, appKey) =>
 		db.transaction(
 			async (tx) => {
@@ -303,14 +303,14 @@ function readOwn<T>(query: (tx: Tx) => Promise<T[]>): OrgReader<T> {
 					.from(orgSync)
 					.where(ownSynced(appKey));
 				if (!row?.fetchedAt) return null;
-				return { fetchedAt: row.fetchedAt, items: await query(tx) };
+				return { fetchedAt: row.fetchedAt, data: await query(tx) };
 			},
 			{ isolationLevel: "repeatable read", accessMode: "read only" },
 		);
 }
 
-/** 当前成员，按 userName 排序；自有应用没同步成功过时 null */
-export const readOrgUsers = readOwn<OrgApiUser>(async (tx) => {
+/** 当前成员，按 userName 排序 */
+async function selectUsers(tx: Tx): Promise<OrgApiUser[]> {
 	const rows = await tx.select().from(orgUsers).where(isCurrent);
 	const links = await tx
 		.select({
@@ -332,21 +332,30 @@ export const readOrgUsers = readOwn<OrgApiUser>(async (tx) => {
 	return rows
 		.map((r) => fromRow(r, deptsOf.get(r.userid) ?? []))
 		.sort((a, b) => compareCodeUnits(a.userName, b.userName));
-});
+}
 
-/** 部门，按 id 排序；自有应用没同步成功过时 null */
-export const readOrgDepartments = readOwn<OrgApiDept>(
-	async (tx) =>
-		await tx
-			.select({
-				id: orgDepartments.id,
-				parentId: orgDepartments.parentId,
-				name: orgDepartments.name,
-				ancestorIds: orgDepartments.ancestorIds,
-			})
-			.from(orgDepartments)
-			.orderBy(asc(orgDepartments.id)),
-);
+/** 部门，按 id 排序 */
+function selectDepartments(tx: Tx): Promise<OrgApiDept[]> {
+	return tx
+		.select({
+			id: orgDepartments.id,
+			parentId: orgDepartments.parentId,
+			name: orgDepartments.name,
+			ancestorIds: orgDepartments.ancestorIds,
+		})
+		.from(orgDepartments)
+		.orderBy(asc(orgDepartments.id));
+}
+
+/** 以下三个读路径在自有应用没同步成功过时都是 null */
+export const readOrgUsers = readOwn(selectUsers);
+export const readOrgDepartments = readOwn(selectDepartments);
+
+/** 成员与部门出自同一个快照：`/api/v2/directory` 的 DN 引用要互相对得上 */
+export const readOrgDirectory = readOwn(async (tx) => ({
+	users: await selectUsers(tx),
+	departments: await selectDepartments(tx),
+}));
 
 /** OIDC 准入与 claim 用得上的那几项 */
 export interface Member {

@@ -24,6 +24,7 @@ import { checkEmployment, type Employment } from "~/dingtalk/employment";
 import { fetchOrg } from "~/dingtalk/fetch-org";
 import { apiKeyEntryId } from "~/domain/api-key";
 import { CLIENT_SCOPE } from "~/domain/oidc-client";
+import type { OrgApiDirectoryResponse } from "~/domain/org-api";
 import { SYNC_TRIGGER_SUMMARY } from "~/domain/sync";
 import { type IdpEnv, parseEnv } from "~/env";
 import { createOidcProvider } from "~/oidc/provider";
@@ -758,6 +759,66 @@ maybe("IdP 路由契约 (需要 DATABASE_URL)", () => {
 			expect(res.json()).not.toHaveProperty("appKey");
 			expect(res.body).not.toContain(DINGTALK_APP_KEY);
 		});
+
+		it("GET /api/v2/directory 与 .ldif：同一份条目的两种编码，baseDn 未配时取默认，审计各记一条", async () => {
+			const res = await call("GET", "/api/v2/directory", AS_REST);
+			expect(res.statusCode).toBe(200);
+			const body = res.json() as OrgApiDirectoryResponse;
+			const person = `dingtalkUnionId=union-tok-${DINGTALK_APP_KEY},ou=people,dc=dingorg`;
+			expect(body.baseDn).toBe("dc=dingorg");
+			expect(body.entries.map((e) => e.dn)).toEqual([
+				"ou=people,dc=dingorg",
+				"ou=groups,dc=dingorg",
+				person,
+				"dingtalkDeptId=1,ou=groups,dc=dingorg",
+			]);
+			expect(body.total).toBe(4);
+			expect(body.entries[3]?.attributes.member).toEqual([person]);
+			expect(Number.isNaN(Date.parse(body.fetchedAt))).toBe(false);
+
+			const ldif = await call("GET", "/api/v2/directory.ldif", AS_REST);
+			expect(ldif.statusCode).toBe(200);
+			expect(ldif.headers["content-type"]).toBe("text/plain; charset=utf-8");
+			expect(ldif.body.startsWith("version: 1\n# baseDn: dc=dingorg\n")).toBe(
+				true,
+			);
+			expect([...ldif.body.matchAll(/^dn: (.*)$/gm)].map((m) => m[1])).toEqual(
+				body.entries.map((e) => e.dn),
+			);
+
+			await vi.waitFor(async () => {
+				const rows = await deps.db
+					.select()
+					.from(auditLogs)
+					.where(eq(auditLogs.userAgent, UA));
+				for (const action of [
+					AUDIT_ACTIONS.orgReadDirectory,
+					AUDIT_ACTIONS.orgReadDirectoryLdif,
+				]) {
+					expect(rows).toContainEqual(
+						expect.objectContaining({
+							action,
+							status: "success",
+							actorType: "api_key",
+							actorId: KEY_HR.id,
+							targetType: "org",
+							details: { summary: "读取目录（1 人、1 个部门）" },
+						}),
+					);
+				}
+			});
+		});
+
+		it.each(["/api/v2/directory", "/api/v2/directory.ldif"])(
+			"%s 走同一个 guard：没带凭证是不说原因的 401",
+			async (path) => {
+				const res = await call("GET", path);
+				expect(res.statusCode).toBe(401);
+				expect(res.json()).toEqual({
+					error: { code: "unauthorized", message: "无效的凭证" },
+				});
+			},
+		);
 
 		// 下面两条是 guard 错误翻译仅有的哨兵
 		it("钉钉报错 → 502 且带 errcode；状态端点讲原因", async () => {

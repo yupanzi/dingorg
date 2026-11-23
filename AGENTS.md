@@ -30,6 +30,7 @@ src/
 ├── db/              连接池工厂 · libpq-url（sslmode 语义）· schema/
 ├── domain/          纯逻辑、无 IO：oidc-client · api-key · config-json · org-api
 │                    · org-sync · org-identity · org-title · sync · audit
+│                    · ldap-directory（v2 目录 · 属性表 · schema 生成）· ldif
 ├── admission/       准入（回调与 findAccount 共用）：同步结果 + 钉钉实时校验 + 新人补同步
 ├── oidc/            provider · adapter · account（findAccount）· keys · mount · new-client
 ├── interaction/     钉钉扫码交互（唯一调钉钉用户级 OAuth 的地方）
@@ -44,6 +45,7 @@ src/
 └── bin/             一次性入口：migrate · cron/oidcpurge · cron/orgsync
                      · auth（`auth:oidc` / `auth:apikey`，只在本机跑，不进镜像）
 drizzle/             迁移
+ldap/                dingorg.ldif：v2 目录的自定义 schema（OpenLDAP cn=config），由代码生成
 charts/dingorg/      Helm：Deployment + CronJob + migrate Job + 部署后的 orgsync hook
 Dockerfile           一个镜像、多入口
 .releaserc.json      发版：版本号 · CHANGELOG · tag · GitHub Release · 推镜像与 chart（CI 的 release job 跑）
@@ -146,6 +148,22 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - ⚠️ **`extension` 原样透传，字段集合由钉钉后台管理员定义**：要收口就在
   `domain/org-sync.ts` 的 `toUser` 加允许键白名单。
 - **`GET /api/v1` 自描述端点：加端点要来补一行**，漏了没有检查会红。
+
+### LDAP 目录（`/api/v2`、`domain/ldap-directory.ts`）
+
+- **数据规范是 LDAP 标准 schema，协议是 REST**：v2 与 v1 读同一份镜像（`readOrgDirectory`，同一个
+  快照），鉴权、懒加载、审计照旧。别在本服务里起 LDAP 协议服务（端口固定 3080、单进程）。
+- ⚠️ **严格合规，四条不变量在文件头**（MUST 不缺、多值不重、DN 引用都指向输出了的条目、按顺序导入
+  不会悬空），别为了多给数据破掉。哨兵 `domain/ldap-directory.test.ts` 的 `expectImportable`。
+- **单值 / 多值、去重规则、运营属性只看 `ATTRIBUTES` 表**：JSON 编码、LDIF 与 schema 都从它出。
+  ⚠️ `ldap/dingorg.ldif` 由 `renderOpenLdapSchema` 生成、别手改（测试比对两者）；`OID_ARC` 别换。
+- ⚠️ **DN 只含永不变的 id**（人 unionid、部门钉钉部门 id），别改成 `uid=<userName>` 或按部门树嵌套：
+  改邮箱、部门改名就会改 DN。层级只靠 `member` 嵌套表达。`LDAP_BASE_DN` 上线后别改。
+- **身兼多职**：`title` / `ou` / `departmentNumber` / `memberOf` 多值；主管放在那个部门的 `owner` 上，
+  别挂成人身上的全局标记。`manager` 不填，别从部门主管推（那是我们自己编的汇报关系）。
+- **v2 不输出 `extension` 与 `jobLevel`**：加属性先进自定义辅助类（改 schema = 导入方重新加载）。
+- **JSON 与 LDIF 是同一份条目的两种编码**（`api/org.ts` 的 `loadDirectory`），LDIF 只少运营属性
+  `memberOf`；审计动作串分开记。
 
 ### 组织同步（`sync/`）
 
@@ -289,6 +307,8 @@ scripts/             release-version（发版时把版本写回 package.json 与
 - **给 `OrgApiUser` 加字段 = `db/schema/org.ts` 加列 + `sync/store.ts` 的 `toRow` / `fromRow`**：
   `toRow` 漏了是类型错误，`fromRow` 漏了的哨兵是 `store.integration.test.ts` 的读写往返用例。
 - **新增环境变量**：`src/env.ts` + `.env.example`；非敏感的再加进 `values.yaml`，敏感的进 Secret。
+- **给 `OrgApiUser` 加字段，v2 要不要带它**：标准属性能放就进 `STANDARD_ATTRIBUTES`，不能就进自定义
+  辅助类（见上面「LDAP 目录」），别塞进语义不对的标准属性。
 - **相对 import 不写 `.js`；JSON / tsconfig 里只用行注释。**
 - **`pnpm-workspace.yaml` 的 `allowBuilds: esbuild` 不能删。**
 - **升 pnpm 用 `corepack use pnpm@<版本>`**：它同时改 `packageManager` 与锁文件开头记 pnpm 自身
@@ -310,7 +330,8 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
   `app.integration.test.ts` · 凭证配置 `domain/config-json.test.ts`、`domain/oidc-client.test.ts`、
   `env.test.ts`、`oidc/new-client.test.ts` · 脱敏 `log.test.ts` · sslmode 语义 `db/index.test.ts`
   · 职级 `domain/org-title.test.ts` · 实时校验 `dingtalk/employment.test.ts`
-  · email 兜底 `domain/org-identity.test.ts`（「邮箱」兜底一组）。
+  · email 兜底 `domain/org-identity.test.ts`（「邮箱」兜底一组）
+  · LDAP 目录 `domain/ldap-directory.test.ts`、`domain/ldif.test.ts`。
 - **准入必跑 `admission/index.integration.test.ts`（组合规则）与 `oidc/account.integration.test.ts`**：
   后者「状态行属于别的应用时一律拒绝」「已离开的人拒绝」「复用会话时钉钉实时说不是员工 → 拒」不能删；
   `app.integration.test.ts` 的「扫码登录与准入」走完整链路（含复用会话不是 500）。
@@ -327,6 +348,9 @@ pnpm vitest run --reporter=verbose   # 逐个确认集成测试是 passed 而非
     `system`），60 秒内再跑也是 exit 0；两个 `pnpm orgsync` 同时跑只有一个外呼，另一个报「另一处正在
     同步」、等完 exit 0；`DATABASE_URL` 指向空端口 → 共 3 次尝试后 exit 1。
   - 离开：钉钉里移除一个人 → 同步 → 他的 `left_at` 有值、`/org/users` 里没有他、扫码看到 403 页。
+  - LDAP 目录：起一个 OpenLDAP（开 memberof overlay），`ldapadd -Y EXTERNAL` 加载 `ldap/dingorg.ldif`，
+    再把 `/api/v2/directory.ldif` 原样 `ldapadd`：全部条目导入成功，`memberOf` 由服务器算出且与 JSON
+    里的一致，按 `dingtalkUnionId` 搜区分大小写。
   - 换应用：`DINGTALK_APP_KEY` 换成假值启动 → `GET /org/users` 回 503 `not_synced`、不外呼，库里
     原应用的数据不动。
   - 日志：带 `?code=xxx` 访问扫码回调，日志里 grep 不到 `xxx`；healthz 不出现；
