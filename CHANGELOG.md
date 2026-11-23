@@ -1,3 +1,9 @@
+## [1.7.0](https://github.com/yupanzi/dingorg/compare/v1.6.0...v1.7.0) (2026-11-23)
+
+### Features
+
+* **api:** 按 LDAP 标准 schema 输出组织目录（JSON 与 LDIF） ([37e0c82](https://github.com/yupanzi/dingorg/commit/37e0c82c08abf926c2d809c1cdd5a3a496396f94))
+
 ## [1.6.0](https://github.com/yupanzi/dingorg/compare/v1.5.0...v1.6.0) (2026-10-21)
 
 ### Features
